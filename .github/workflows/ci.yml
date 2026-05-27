@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync environment (from uv.lock)
+        run: uv sync --frozen
+
+      - name: Verilator version
+        run: |
+          export VERILATOR_ROOT="$(uv run python -c 'import verilator,os;print(os.path.dirname(verilator.__file__))')"
+          export PATH="$VERILATOR_ROOT/bin:$PATH"
+          verilator --version
+
+      - name: Lint RTL (FuseSoC + Verilator)
+        run: uv run fusesoc run --target=lint axil_shell
+
+      - name: Run testbench (pytest)
+        run: uv run pytest -v
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            dv/results.xml
+            dv/*.result.xml
+          if-no-files-found: ignore

@@ -1,0 +1,25 @@
+# FuseSoC / Edalize
+build/
+
+# cocotb / simulator artifacts
+sim_build/
+results.xml
+dump.fst
+dump.vcd
+*.fst
+*.vcd
+obj_dir/
+
+# pytest / python
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# uv virtual environment (uv.lock IS committed for reproducibility)
+.venv/
+*.egg-info/
+
+# RDL-generated artifacts (regenerated at build by the FuseSoC generator)
+rdl/gen/
+dv/axil_shell/regmap.py
+axil_shell-rdl_regs.core

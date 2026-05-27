@@ -1,0 +1,88 @@
+CAPI=2:
+# FuseSoC core description for the AXI-Lite shell.
+#
+# This declares the RTL sources and a Verilator-based simulation target. The
+# pytest harness (dv/conftest.py + dv/axil_shell/test_runner.py) reads the
+# resolved file list from this core via the FuseSoC CLI and drives cocotb +
+# pyuvm against it, so FuseSoC owns the IP/source metadata while pytest owns
+# test orchestration.
+#
+# Useful commands:
+#   fusesoc core show axil_shell           # inspect the core
+#   fusesoc run --target=lint axil_shell   # Verilator lint only
+#   pytest                                 # build + run the cocotb/pyuvm tests
+
+name: ::axil_shell:0.1.0
+description: AXI4-Lite top-level shell with a simple register endpoint
+
+filesets:
+  rtl:
+    files:
+      - rtl/axil_shell.sv
+    file_type: systemVerilogSource
+
+  # The RDL source. Listed so the generator's input is tracked and the .rdl
+  # ships with the core.
+  rdl:
+    files:
+      - rdl/axil_shell.rdl
+    file_type: user
+
+# Register the RDL generator so this core (or any dependent) can invoke it.
+# It runs rdl/rdl_gen.py, which regenerates the Python regmap (into the dv/
+# package) plus HTML docs + C header from the .rdl, and emits a core listing
+# the generated header.
+generators:
+  rdl_gen:
+    command: rdl/rdl_gen.py
+    interpreter: python3
+    description: Regenerate register map + docs from the SystemRDL source
+
+targets:
+  # The default target is what dependents pick up and what the pytest harness
+  # queries for the RTL file list. It runs the RDL generator first so the
+  # register map is always current before the RTL is consumed.
+  default:
+    filesets:
+      - rtl
+      - rdl
+    generate:
+      - rdl_regs
+    toplevel: axil_shell
+
+  # Verilator lint-only target — handy as a quick static check, independent of
+  # the cocotb flow. Run with: fusesoc run --target=lint axil_shell
+  lint:
+    default_tool: verilator
+    filesets:
+      - rtl
+    generate:
+      - rdl_regs
+    toplevel: axil_shell
+    tools:
+      verilator:
+        mode: lint-only
+        verilator_options:
+          - -Wall
+          - -Wno-DECLFILENAME
+          - -Wno-UNUSEDSIGNAL
+
+# Invoke the rdl_gen generator with our RDL file. The pytest harness triggers
+# this (via `fusesoc run --setup`) so the regmap is regenerated at build time.
+generate:
+  rdl_regs:
+    generator: rdl_gen
+    parameters:
+      rdl_file: rdl/axil_shell.rdl
+
+parameters:
+  ADDR_WIDTH:
+    datatype: int
+    description: AXI-Lite address width (bits)
+    paramtype: vlogparam
+    default: 8
+  DATA_WIDTH:
+    datatype: int
+    description: AXI-Lite data width (bits)
+    paramtype: vlogparam
+    default: 32

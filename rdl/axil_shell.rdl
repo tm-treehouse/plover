@@ -1,0 +1,73 @@
+// =============================================================================
+// axil_shell.rdl
+//
+// SystemRDL 2.0 description of the AXI-Lite shell's register map. This is the
+// single source of truth for the registers: PeakRDL turns it into the
+// regblock RTL, a register model for the testbench, and documentation, so the
+// map stays consistent here and in any downstream consumer (software, other
+// blocks, IP-XACT, etc.).
+//
+// Map (32-bit registers, byte addresses):
+//   0x00  SCRATCH   R/W   general-purpose scratch
+//   0x04  CONTROL   R/W   control bits (design-defined)
+//   0x08  STATUS    RO    bit0 mirrors CONTROL.enable (hardware-driven)
+//   0x0C  ID        RO    constant 0xC0C07B01
+// =============================================================================
+
+addrmap axil_shell {
+    name = "AXI-Lite shell register map";
+    desc = "Control/status registers for the AXI4-Lite top-level shell.";
+
+    default regwidth = 32;
+    default accesswidth = 32;
+
+    // 0x00 ---------------------------------------------------------------
+    reg {
+        name = "Scratch register";
+        desc = "General-purpose read/write scratch storage.";
+        field {
+            sw = rw;
+            hw = r;
+            desc = "Scratch data.";
+        } DATA[31:0] = 0;
+    } SCRATCH @ 0x00;
+
+    // 0x04 ---------------------------------------------------------------
+    reg {
+        name = "Control register";
+        desc = "Design-defined control bits.";
+        field {
+            sw = rw;
+            hw = r;
+            desc = "Master enable. Mirrored by STATUS.ready.";
+        } ENABLE[0:0] = 0;
+        field {
+            sw = rw;
+            hw = r;
+            desc = "Spare control bits.";
+        } SPARE[31:1] = 0;
+    } CONTROL @ 0x04;
+
+    // 0x08 ---------------------------------------------------------------
+    reg {
+        name = "Status register";
+        desc = "Read-only status. Driven by hardware.";
+        field {
+            sw = r;
+            hw = w;
+            desc = "Ready: reflects CONTROL.ENABLE.";
+        } READY[0:0] = 0;
+    } STATUS @ 0x08;
+
+    // 0x0C ---------------------------------------------------------------
+    reg {
+        name = "ID register";
+        desc = "Constant identification value.";
+        field {
+            sw = r;
+            hw = r;
+            desc = "Hard-coded ID.";
+        } VALUE[31:0] = 0xC0C07B01;
+    } ID @ 0x0C;
+
+} ;

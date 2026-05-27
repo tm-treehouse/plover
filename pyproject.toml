@@ -1,0 +1,61 @@
+[project]
+name = "plover"
+version = "0.1.0"
+description = "AXI4-Lite shell + design-verification environment (cocotb + Verilator + pyuvm, FuseSoC + pytest, SystemRDL)"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+
+# Runtime/verification dependencies. Versions are lower bounds verified against;
+# exact resolved versions are pinned in uv.lock. The Verilator pip wheel ships a
+# recent release binary, avoiding the VPI-API mismatch between cocotb 2.x and
+# older system Verilator packages.
+dependencies = [
+    "cocotb>=2.0.1",
+    "cocotb-bus>=0.2.1",
+    "cocotbext-axi>=0.1.28",
+    "pyuvm>=4.0.1",
+    "fusesoc>=2.4.6",
+    "pyyaml>=6.0",
+    "verilator==5.48.0",
+    # SystemRDL register tooling (used by the FuseSoC generator rdl/rdl_gen.py).
+    "systemrdl-compiler>=1.32",
+    "peakrdl>=1.5",
+    "peakrdl-html>=2.12",
+    "peakrdl-cheader>=1.1",
+    # The verification base library (OpenTitan dv_lib port). Distribution name is
+    # pyuvm-dv-lib; the import package is dv_lib. Source pinned below.
+    "pyuvm-dv-lib",
+]
+
+# Test-only dependencies. Synced by default with `uv sync`; skip with --no-dev.
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+# dv_lib is not on PyPI — pull it from the upstream repo. Pin to a tag/commit
+# here once the upstream API settles, e.g. add `, tag = "v1.0.0"`.
+[tool.uv.sources]
+pyuvm-dv-lib = { git = "https://github.com/tm-treehouse/pyuvm-dv-lib" }
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+# Only the harness in dv/ is a real pytest entry point. The cocotb test
+# modules (axil_test.py, test_axil_shell.py) run *inside* the simulator and
+# must not be collected directly — they import a generated regmap and use
+# cocotb's runtime, so collecting them at the top level would error.
+testpaths = ["dv"]
+python_files = ["test_axil_shell_pytest.py"]
+addopts = "-ra"
+markers = [
+    "slow: tests that build RTL and run a full simulation",
+]
+
+[tool.setuptools]
+# This is a verification project, not a distributable package; no packages to
+# install. Present so the project table is valid for tooling.
+py-modules = []
