@@ -140,6 +140,28 @@ Dumps are git-ignored. For large/long runs, FST is much smaller than VCD —
 add `--trace-fst` to the Verilator build args in `dv/test_axil_shell_pytest.py`
 (`BUILD_ARGS["verilator"]`) and the dump becomes `dv/dump.fst`.
 
+## Adding a new sub-unit
+
+The `counter` block is a deliberately tiny template for adding more
+sub-units. Its layout mirrors the shell:
+
+```
+rtl/counter/counter.sv                       the RTL
+counter.core                                 FuseSoC core (rtl + lint targets)
+dv/counter/
+  counter_agent.py                           item, cfg, driver, monitor, agent
+  counter_env.py                             env cfg, scoreboard + ref model, vseqr, env
+  counter_test.py                            vseqs + CounterBaseTest (owns objection)
+  test_counter.py                            cocotb entry (@pyuvm.test() classes)
+dv/test_counter_pytest.py                    FuseSoC -> EDAM -> cocotb runner
+```
+
+To add unit `foo`: copy `rtl/counter/`, `dv/counter/`, `counter.core`, and
+`dv/test_counter_pytest.py`, rename `counter` -> `foo` throughout (CORE_NAME,
+TEST_MODULE, class names, `vif` signal handles), and change the driver /
+monitor / `RefModel` to match your block. Pytest picks the new harness up
+automatically (it matches `test_*_pytest.py`).
+
 ## How the flow fits together
 
 * **FuseSoC** is the IP/source metadata layer. `axil_shell.core` declares the

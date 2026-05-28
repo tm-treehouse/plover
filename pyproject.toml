@@ -49,7 +49,7 @@ build-backend = "setuptools.build_meta"
 # must not be collected directly — they import a generated regmap and use
 # cocotb's runtime, so collecting them at the top level would error.
 testpaths = ["dv"]
-python_files = ["test_axil_shell_pytest.py"]
+python_files = ["test_*_pytest.py"]
 addopts = "-ra"
 markers = [
     "slow: tests that build RTL and run a full simulation",

@@ -1,0 +1,41 @@
+CAPI=2:
+# FuseSoC core for the counter sub-unit — template for future units.
+#
+# Pattern: each unit has its own .core (one fileset for the RTL, plus a lint
+# target). The pytest harness for the unit resolves sources through this core
+# the same way the top-level shell does.
+
+name: ::counter:0.1.0
+description: Simple synchronous up-counter (template sub-unit)
+
+filesets:
+  rtl:
+    files:
+      - rtl/counter/counter.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+      - rtl
+    toplevel: counter
+
+  lint:
+    default_tool: verilator
+    filesets:
+      - rtl
+    toplevel: counter
+    tools:
+      verilator:
+        mode: lint-only
+        verilator_options:
+          - -Wall
+          - -Wno-DECLFILENAME
+          - -Wno-UNUSEDSIGNAL
+
+parameters:
+  WIDTH:
+    datatype: int
+    description: Counter width (bits)
+    paramtype: vlogparam
+    default: 8
