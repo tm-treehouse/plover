@@ -43,17 +43,21 @@ lint:
 	$(RUN) fusesoc run --target=lint axil_shell
 
 regs:
-	$(RUN) python rdl/gen_regs.py
+	$(RUN) python units/axil_shell/rdl/gen_regs.py
 
 docs: regs
-	@echo "HTML register docs: rdl/gen/html/index.html"
+	@echo "HTML register docs: units/axil_shell/rdl/gen/html/index.html"
 
 clean:
-	rm -rf build sim_build .pytest_cache dv/.pytest_cache rdl/gen \
-	       dv/axil_shell/regmap.py axil_shell-rdl_regs.core
+	rm -rf build sim_build .pytest_cache
+	find . -name '.pytest_cache' -type d -exec rm -rf {} + 2>/dev/null || true
+	find . -name 'rdl/gen' -type d -exec rm -rf {} + 2>/dev/null || true
+	find units -path '*/dv/regmap.py' -delete 2>/dev/null || true
+	find . -maxdepth 2 -name '*-rdl_regs.core' -delete 2>/dev/null || true
 	find . -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
 	find . -name '*.result.xml' -delete 2>/dev/null || true
-	rm -f dv/results.xml
+	find . -name 'dump.vcd' -delete 2>/dev/null || true
+	find . -name 'dump.fst' -delete 2>/dev/null || true
 
 distclean: clean
 	rm -rf .venv

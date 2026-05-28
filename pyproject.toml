@@ -48,7 +48,7 @@ build-backend = "setuptools.build_meta"
 # modules (axil_test.py, test_axil_shell.py) run *inside* the simulator and
 # must not be collected directly — they import a generated regmap and use
 # cocotb's runtime, so collecting them at the top level would error.
-testpaths = ["dv"]
+testpaths = ["units", "plover"]
 python_files = ["test_*_pytest.py"]
 addopts = "-ra"
 markers = [

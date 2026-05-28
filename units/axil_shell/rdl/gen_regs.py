@@ -137,7 +137,7 @@ def main() -> None:
     ap.add_argument("--rdl", default="rdl/axil_shell.rdl", type=Path)
     ap.add_argument("--outdir", default="rdl/gen", type=Path,
                     help="output dir for docs + C header")
-    ap.add_argument("--regmap-out", default="dv/axil_shell/regmap.py", type=Path,
+    ap.add_argument("--regmap-out", default="dv/regmap.py", type=Path,
                     help="path for the generated Python regmap consumed by the TB")
     ap.add_argument("--no-docs", action="store_true",
                     help="skip HTML + C header (only emit regmap.py)")

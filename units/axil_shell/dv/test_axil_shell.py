@@ -24,11 +24,11 @@ from pyuvm import ConfigDB
 
 from dv_lib import ClkRstIf
 
-from axil_shell.axil_env import AxilEnvCfg
-from axil_shell.axil_test import AxilBaseTest, AxilSweepTest
+from axil_env import AxilEnvCfg
+from axil_test import AxilBaseTest, AxilSweepTest
 # Importing the vseq module registers the vseqs as DVBaseSequence subclasses
 # so DVBaseTest.create_seq_by_name() can resolve them by name.
-from axil_shell import axil_test  # noqa: F401
+import axil_test  # noqa: F401
 
 CLK_PERIOD_NS = 10
 AXIL_PREFIX = "s_axil"

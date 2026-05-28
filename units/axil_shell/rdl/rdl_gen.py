@@ -37,7 +37,7 @@ def main() -> None:
     rdl = files_root / params.get("rdl_file", "rdl/axil_shell.rdl")
     gen_script = files_root / "rdl" / "gen_regs.py"
     outdir = Path("gen").resolve()          # generator runs in its own out dir
-    regmap_out = files_root / "dv" / "axil_shell" / "regmap.py"
+    regmap_out = files_root / "dv" / "regmap.py"
 
     # Run the real generator. regmap.py goes into the package; docs+header go
     # into the generator's output dir (picked up by the emitted core below).

@@ -20,28 +20,41 @@ agent cfg) and the testbench structure carries over.
 ## Layout
 
 ```
-plover/
-  axil_shell.core              FuseSoC CAPI2 core: RTL filesets + targets + RDL generator
-  fusesoc.conf                 local FuseSoC library config (this dir)
-  rdl/
-    axil_shell.rdl             SystemRDL register map — single source of truth
-    gen_regs.py                generator: RDL -> Python regmap + HTML docs + C header
-    rdl_gen.py                 FuseSoC generator wrapper (runs gen_regs at build)
-    gen/                       generated docs + C header (git-ignored)
-  rtl/
-    axil_shell.sv              AXI4-Lite register endpoint (the DUT, hand-written)
-  dv/
-    conftest.py                pytest config; puts dv/ on sys.path
-    test_axil_shell_pytest.py  pytest harness: FuseSoC -> EDAM -> cocotb runner
+plover/                                project root
+  fusesoc.conf                         local FuseSoC library config
+  conftest.py                          repo-level pytest options (--sim / --waves)
+  pyproject.toml                       project metadata + dependencies (uv) + pytest config
+  uv.lock                              pinned dependency versions (committed)
+  .python-version                      pinned Python version for uv
+  units/                               sub-blocks, each self-contained
     axil_shell/
-      regmap.py                generated from the RDL (git-ignored)
-      axil_agent.py            item, agent cfg, driver (cocotbext-axi BFM), monitor, agent
-      axil_env.py              env cfg, scoreboard + RDL-driven reference model, vseqr, env
-      axil_test.py             vseqs (smoke, sweep) + AxilBaseTest (owns the objection)
-      test_axil_shell.py       cocotb entry: @pyuvm.test() classes, cfg wiring
-  pyproject.toml             project metadata + dependencies (uv) + pytest config
-  uv.lock                    pinned dependency versions (committed)
-  .python-version            pinned Python version for uv
+      axil_shell.core                  FuseSoC core: RTL filesets + targets + RDL generator
+      rtl/axil_shell.sv                AXI4-Lite register endpoint (the DUT)
+      rdl/axil_shell.rdl               SystemRDL register map — single source of truth
+      rdl/gen_regs.py                  RDL -> Python regmap + HTML docs + C header
+      rdl/rdl_gen.py                   FuseSoC generator wrapper (runs gen_regs at build)
+      rdl/gen/                         generated docs + C header (git-ignored)
+      dv/
+        regmap.py                      generated from the RDL (git-ignored)
+        axil_agent.py                  item, agent cfg, driver (cocotbext-axi BFM), monitor, agent
+        axil_env.py                    env cfg, scoreboard + RDL-driven reference model, vseqr, env
+        axil_test.py                   vseqs (smoke, sweep) + AxilBaseTest (owns the objection)
+        test_axil_shell.py             cocotb entry: @pyuvm.test() classes, cfg wiring
+        test_axil_shell_pytest.py      pytest harness: FuseSoC -> EDAM -> cocotb runner
+    counter/                           template sub-unit (same shape, no RDL)
+      counter.core
+      rtl/counter.sv
+      dv/<...same shape as axil_shell/dv/...>
+  plover/                              project top — integrates the units above
+    plover.core                        FuseSoC core (depends on axil_shell + counter)
+    rtl/plover.sv                      top-level integration (structural wiring)
+    dv/
+      test_plover.py                   cocotb entry: integration smoke test
+      test_plover_pytest.py            pytest harness for the top
+    syn/                               synthesis scaffolding (vendor-agnostic stubs)
+      constraints/plover.sdc
+      scripts/build.sh
+      README.md
   CHANGELOG.md
   LICENSE
 ```
@@ -143,24 +156,66 @@ add `--trace-fst` to the Verilator build args in `dv/test_axil_shell_pytest.py`
 ## Adding a new sub-unit
 
 The `counter` block is a deliberately tiny template for adding more
-sub-units. Its layout mirrors the shell:
+sub-units. With the colocated layout, each block is self-contained under
+`units/<unit>/`:
 
 ```
-rtl/counter/counter.sv                       the RTL
-counter.core                                 FuseSoC core (rtl + lint targets)
-dv/counter/
-  counter_agent.py                           item, cfg, driver, monitor, agent
-  counter_env.py                             env cfg, scoreboard + ref model, vseqr, env
-  counter_test.py                            vseqs + CounterBaseTest (owns objection)
-  test_counter.py                            cocotb entry (@pyuvm.test() classes)
-dv/test_counter_pytest.py                    FuseSoC -> EDAM -> cocotb runner
+units/counter/
+  counter.core                         FuseSoC core (rtl + lint targets)
+  rtl/counter.sv                       the RTL
+  dv/
+    counter_agent.py                   item, cfg, driver, monitor, agent
+    counter_env.py                     env cfg, scoreboard + ref model, vseqr, env
+    counter_test.py                    vseqs + CounterBaseTest (owns objection)
+    test_counter.py                    cocotb entry (@pyuvm.test() classes)
+    test_counter_pytest.py             FuseSoC -> EDAM -> cocotb runner
 ```
 
-To add unit `foo`: copy `rtl/counter/`, `dv/counter/`, `counter.core`, and
-`dv/test_counter_pytest.py`, rename `counter` -> `foo` throughout (CORE_NAME,
-TEST_MODULE, class names, `vif` signal handles), and change the driver /
-monitor / `RefModel` to match your block. Pytest picks the new harness up
-automatically (it matches `test_*_pytest.py`).
+To add unit `foo`: copy `units/counter/` to `units/foo/`, rename `counter`
+to `foo` throughout (file names, CORE_NAME, TEST_MODULE, class names, `vif`
+signal handles), and change the driver / monitor / `RefModel` to match your
+block. FuseSoC and pytest pick the new unit up automatically (FuseSoC scans
+the whole tree for `.core` files; pytest matches `test_*_pytest.py`).
+
+## Project top (`plover/`)
+
+The `plover/` directory sits parallel to `units/` and holds the project's
+top-level integration — the RTL that instantiates the verified sub-units,
+its own integration testbench, and synthesis scaffolding.
+
+```
+plover/
+  plover.core      FuseSoC core (depends on ::axil_shell and ::counter)
+  rtl/plover.sv    structural top: instantiates axil_shell + counter
+  dv/              integration testbench (cocotb + pyuvm)
+  syn/             synthesis scaffolding (vendor-agnostic — see syn/README.md)
+```
+
+The integration testbench has narrow scope by design: it does not re-verify
+the sub-units (they have their own DV under `units/`) — it only checks that
+the integration is **wired and alive**. The current `smoke` test:
+
+1. Issues an AXI4-Lite read at the top boundary for the shell's constant ID
+   register, proving the AXI path threads through `plover.sv` to
+   `axil_shell` correctly.
+2. Samples `dut.count` across cycles and confirms the counter is advancing,
+   proving the counter is instantiated and clocked.
+
+A bug injected into the wiring (e.g. tying `counter_enable=0`) makes this
+test fail loudly, so the connectivity check has real teeth.
+
+**Known limitation, intentionally left as scaffolding**: `axil_shell` does
+not currently expose its `CONTROL` register bits as ports, so the counter's
+`enable`/`clear` are tied to constants in `plover.sv` rather than driven
+from `CONTROL.ENABLE`. Comments in both `plover/rtl/plover.sv` and the
+integration testbench flag this as a follow-up — extending the shell to
+publish CONTROL is the natural next step, after which the integration test
+grows a "write CONTROL.ENABLE=0, confirm count freezes" check.
+
+The synthesis scaffolding under `plover/syn/` is intentionally
+vendor-agnostic at this stage; see `plover/syn/README.md` for how to wire a
+real synthesis flow into the `syn` target of `plover.core` once a vendor is
+picked.
 
 ## How the flow fits together
 

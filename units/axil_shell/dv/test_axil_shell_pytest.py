@@ -29,8 +29,9 @@ import yaml
 
 from cocotb_tools.runner import get_runner
 
-ROOT = Path(__file__).resolve().parents[1]   # project root (has axil_shell.core)
-DV = ROOT / "dv"
+HERE = Path(__file__).resolve().parent            # units/axil_shell/dv
+UNIT_DIR = HERE.parent                            # units/axil_shell
+ROOT = UNIT_DIR.parents[1]                        # repo root (has fusesoc.conf)
 CORE_NAME = "axil_shell"
 # Target used purely to resolve the source list into an EDAM. It must have a
 # tool so FuseSoC can set up a flow; the verilator "lint" target lists the same
@@ -87,24 +88,22 @@ def _fusesoc_edam() -> dict:
 def _sources_from_edam(edam: dict) -> tuple[list[Path], str]:
     """Extract HDL source paths and the toplevel from an EDAM manifest.
 
-    EDAM file paths are relative to the EDAM's build directory, where FuseSoC
-    has staged copies of the sources under ``src/``. We resolve them back to
-    the original RTL in the repo so a rebuild always reflects edits.
+    EDAM file paths look like ``src/<core>_<ver>/rtl/<file>`` — FuseSoC stages
+    copies under its build dir, stripping the core's root path. We resolve
+    them back to the live RTL under the unit's own directory so rebuilds
+    always reflect edits.
     """
     hdl_types = {"verilogSource", "systemVerilogSource"}
     sources: list[Path] = []
     for f in edam.get("files", []):
         if f.get("file_type") in hdl_types:
-            # name looks like "src/axil_shell_0.1.0/rtl/axil_shell.sv";
-            # map it back to the repo path by its tail after the core dir.
             tail = Path(f["name"])
-            # keep the path from "rtl/" onward if present, else basename
             parts = tail.parts
             if "rtl" in parts:
                 rel = Path(*parts[parts.index("rtl"):])
             else:
                 rel = Path(tail.name)
-            sources.append(ROOT / rel)
+            sources.append(UNIT_DIR / rel)
     toplevel = edam.get("toplevel", "axil_shell")
     if isinstance(toplevel, list):
         toplevel = toplevel[0]
@@ -141,11 +140,11 @@ def _run(design, cocotb_testcase: str) -> None:
     )
     runner.test(
         hdl_toplevel=design["toplevel"],
-        test_module="axil_shell.test_axil_shell",
-        test_dir=str(DV),
+        test_module="test_axil_shell",
+        test_dir=str(HERE),
         testcase=cocotb_testcase,
         waves=waves,
-        extra_env={"PYTHONPATH": f"{DV}{os.pathsep}{os.environ.get('PYTHONPATH', '')}"},
+        extra_env={"PYTHONPATH": f"{HERE}{os.pathsep}{os.environ.get('PYTHONPATH', '')}"},
     )
 
 

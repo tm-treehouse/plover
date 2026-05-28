@@ -1,12 +1,13 @@
 """
-FuseSoC + pytest harness for the counter sub-unit. **Template** — this file
-intentionally mirrors ``dv/test_axil_shell_pytest.py``. To add another
-unit, copy this file, change CORE_NAME / TEST_MODULE / TESTCASES, and adjust
-BUILD_ARGS / parameters if needed.
+FuseSoC + pytest harness for the plover project-top testbench.
 
-Keeping each unit's harness self-contained (rather than factoring shared
-helpers) means a new unit is one copyable file plus a .core and a dv/<unit>/
-package — easier to read and adapt than a shared driver.
+The ``plover`` core depends on ``axil_shell`` and ``counter``, so FuseSoC's
+EDAM resolves the full source list (top integration + both sub-units) and
+the cocotb runner builds the whole hierarchy.
+
+Same shape as the unit harnesses under units/<unit>/dv/; the only knobs that
+differ are the core name, the test module, and the source-back-mapping
+(sources come from multiple unit dirs, not just one).
 """
 from __future__ import annotations
 
@@ -19,18 +20,14 @@ import yaml
 
 from cocotb_tools.runner import get_runner
 
-# ---- Unit-specific knobs (the bits you change when adapting) --------
-CORE_NAME = "counter"
-TEST_MODULE = "test_counter"
-TESTCASES = ["smoke", "clear"]
-
-# ---- Shared boilerplate (same shape as the shell harness) -----------
-HERE = Path(__file__).resolve().parent          # units/<unit>/dv
-UNIT_DIR = HERE.parent                          # units/<unit>
-ROOT = UNIT_DIR.parents[1]                      # repo root (has fusesoc.conf)
-# Source-resolution target. Must have a default_tool; "lint" is the natural
-# choice since every unit's .core in this repo already has it.
+CORE_NAME = "plover"
+TEST_MODULE = "test_plover"
+TESTCASES = ["smoke"]
 RESOLVE_TARGET = "lint"
+
+HERE = Path(__file__).resolve().parent          # plover/dv
+PROJ_DIR = HERE.parent                          # plover/
+ROOT = PROJ_DIR.parent                          # repo root
 
 BUILD_ARGS = {
     "verilator": ["--trace", "--trace-structs",
@@ -67,17 +64,31 @@ def _fusesoc_edam() -> dict:
 
 
 def _sources_from_edam(edam: dict) -> tuple[list[Path], str]:
+    """Map EDAM staged paths back to the live RTL.
+
+    With a multi-core design, EDAM file names look like:
+        src/plover_0.1.0/rtl/plover.sv
+        src/axil_shell_0.1.0/rtl/axil_shell.sv
+        src/counter_0.1.0/rtl/counter.sv
+
+    We use the staged ``<core>_<ver>`` segment to choose the right live dir:
+    ``plover_*`` -> ``plover/``, otherwise ``units/<core>/``.
+    """
     hdl_types = {"verilogSource", "systemVerilogSource"}
     sources: list[Path] = []
     for f in edam.get("files", []):
-        if f.get("file_type") in hdl_types:
-            tail = Path(f["name"])
-            parts = tail.parts
-            if "rtl" in parts:
-                rel = Path(*parts[parts.index("rtl"):])
-            else:
-                rel = Path(tail.name)
-            sources.append(UNIT_DIR / rel)
+        if f.get("file_type") not in hdl_types:
+            continue
+        parts = Path(f["name"]).parts
+        # Find the staged core dir (the segment before "rtl/").
+        if "rtl" not in parts:
+            continue
+        rtl_idx = parts.index("rtl")
+        staged_core = parts[rtl_idx - 1]  # "<corename>_<ver>"
+        rel = Path(*parts[rtl_idx:])      # "rtl/<file>"
+        core_name = staged_core.rsplit("_", 1)[0]
+        live_dir = PROJ_DIR if core_name == CORE_NAME else ROOT / "units" / core_name
+        sources.append(live_dir / rel)
     toplevel = edam.get("toplevel", CORE_NAME)
     if isinstance(toplevel, list):
         toplevel = toplevel[0]
@@ -117,5 +128,5 @@ def _run(design, cocotb_testcase: str) -> None:
 
 
 @pytest.mark.parametrize("cocotb_testcase", TESTCASES)
-def test_counter(design, cocotb_testcase):
+def test_plover(design, cocotb_testcase):
     _run(design, cocotb_testcase)

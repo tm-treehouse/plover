@@ -11,7 +11,7 @@ description: Simple synchronous up-counter (template sub-unit)
 filesets:
   rtl:
     files:
-      - rtl/counter/counter.sv
+      - rtl/counter.sv
     file_type: systemVerilogSource
 
 targets:

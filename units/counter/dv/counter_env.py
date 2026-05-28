@@ -18,7 +18,7 @@ from dv_lib import (
     UVM_ACTIVE,
 )
 
-from .counter_agent import CounterAgent, CounterAgentCfg, CounterItem
+from counter_agent import CounterAgent, CounterAgentCfg, CounterItem
 
 
 _log = logging.getLogger("dv_lib.counter")

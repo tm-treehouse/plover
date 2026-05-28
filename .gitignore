@@ -20,6 +20,7 @@ __pycache__/
 *.egg-info/
 
 # RDL-generated artifacts (regenerated at build by the FuseSoC generator)
-rdl/gen/
-dv/axil_shell/regmap.py
-axil_shell-rdl_regs.core
+# RDL-generated artifacts (regenerated at build by the FuseSoC generator)
+**/rdl/gen/
+units/*/dv/regmap.py
+*-rdl_regs.core

@@ -4,6 +4,37 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/), and the project aims
 to follow semantic versioning.
 
+## [Unreleased]
+
+### Added
+- `plover/` project top sitting parallel to `units/`: top-level RTL
+  (`plover/rtl/plover.sv`) that instantiates `axil_shell` and `counter`,
+  integration testbench (`plover/dv/`) that checks the AXI path and counter
+  wiring through the hierarchy, and synthesis scaffolding under `plover/syn/`
+  (vendor-agnostic stubs).
+- `plover/plover.core` — FuseSoC core depending on the unit cores, so a
+  single resolve pulls in the full design.
+
+### Changed
+- **Layout reorganized to colocate RTL and DV per unit** under
+  `units/<unit>/{rtl,rdl,dv,*.core}`. Each block is now self-contained;
+  adding a new unit is one directory copy. The top-level `rtl/` and `dv/`
+  directories no longer exist.
+- Per-unit `dv/` directories are now flat (no inner Python package); cocotb
+  `test_module` references and intra-package imports updated accordingly.
+- `conftest.py` moved to repo root; pytest `testpaths` widened to
+  `[units, plover]`.
+- RDL generator writes regmap to `units/axil_shell/dv/regmap.py` (flat).
+- README layout tree and "Adding a new sub-unit" section rewritten;
+  new "Project top" section added.
+- Makefile `clean` updated for the new layout.
+
+### Notes
+- The integration in `plover/rtl/plover.sv` is structural-only at this
+  stage: `axil_shell` does not yet expose its `CONTROL` register bits as
+  ports, so the counter's `enable`/`clear` are tied to constants. Comments
+  in both the RTL and the integration testbench flag this as a follow-up.
+
 ## [0.1.0] - 2026-05-26
 
 Initial release. An AXI4-Lite top-level shell with a simple register endpoint,

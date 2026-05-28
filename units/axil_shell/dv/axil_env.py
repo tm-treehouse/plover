@@ -26,7 +26,7 @@ from dv_lib import (
     UVM_ACTIVE,
 )
 
-from .axil_agent import AxilAgent, AxilAgentCfg, AxilItem, AxilOp
+from axil_agent import AxilAgent, AxilAgentCfg, AxilItem, AxilOp
 
 
 _log = logging.getLogger("dv_lib.axil_shell")
@@ -34,7 +34,7 @@ _log = logging.getLogger("dv_lib.axil_shell")
 
 # ---- Reference model -------------------------------------------------
 
-from . import regmap as rm
+import regmap as rm
 
 
 class RegModel:

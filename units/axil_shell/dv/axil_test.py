@@ -15,9 +15,9 @@ import random
 
 from dv_lib import DVBaseTest, DVBaseVSeq, DVBaseSequence
 
-from .axil_env import AxilEnv, AxilEnvCfg
-from .axil_agent import AxilItem, AxilOp
-from . import regmap as rm
+from axil_env import AxilEnv, AxilEnvCfg
+from axil_agent import AxilItem, AxilOp
+import regmap as rm
 
 
 # ---- An agent-level item sub-sequence -------------------------------

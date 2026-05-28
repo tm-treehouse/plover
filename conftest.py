@@ -1,18 +1,12 @@
-"""pytest configuration for the AXI-Lite shell testbench.
+"""Repo-root pytest configuration.
 
-Puts ``dv/`` on ``sys.path`` so the ``axil_shell`` package imports during
-collection, and exposes ``--sim``/``--waves`` options mirroring the ``SIM``
-and ``WAVES`` env vars.
+Exposes ``--sim`` / ``--waves`` options mirroring the ``SIM`` / ``WAVES`` env
+vars. Each unit's harness (under ``units/<unit>/dv/test_*_pytest.py``) sets
+its own ``PYTHONPATH`` for its ``dv/`` package via cocotb's ``extra_env``.
 """
 from __future__ import annotations
 
 import os
-import sys
-from pathlib import Path
-
-DV = Path(__file__).resolve().parent
-if str(DV) not in sys.path:
-    sys.path.insert(0, str(DV))
 
 
 def pytest_addoption(parser):

@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from dv_lib import DVBaseTest, DVBaseVSeq, DVBaseSequence
 
-from .counter_env import CounterEnv, CounterEnvCfg
-from .counter_agent import CounterItem
+from counter_env import CounterEnv, CounterEnvCfg
+from counter_agent import CounterItem
 
 
 # ---- Item sub-sequence ----------------------------------------------

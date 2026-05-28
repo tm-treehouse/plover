@@ -18,9 +18,9 @@ from pyuvm import ConfigDB
 
 from dv_lib import ClkRstIf
 
-from counter.counter_env import CounterEnvCfg
-from counter.counter_test import CounterBaseTest, CounterClearTest
-from counter import counter_test  # noqa: F401  -- registers vseqs by name
+from counter_env import CounterEnvCfg
+from counter_test import CounterBaseTest, CounterClearTest
+import counter_test  # noqa: F401  -- registers vseqs by name
 
 CLK_PERIOD_NS = 10
 WIDTH = 8

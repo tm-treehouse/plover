@@ -1,0 +1,52 @@
+CAPI=2:
+# FuseSoC core for the project top.
+#
+# Depends on the unit cores under units/ so FuseSoC resolves the full source
+# list (top integration + axil_shell + counter) into one design.
+
+name: ::plover:0.1.0
+description: Plover project top (integration of axil_shell + counter)
+
+filesets:
+  rtl:
+    files:
+      - rtl/plover.sv
+    file_type: systemVerilogSource
+    depend:
+      - ::axil_shell
+      - ::counter
+
+targets:
+  default:
+    filesets:
+      - rtl
+    toplevel: plover
+
+  lint:
+    default_tool: verilator
+    filesets:
+      - rtl
+    toplevel: plover
+    tools:
+      verilator:
+        mode: lint-only
+        verilator_options:
+          - -Wall
+          - -Wno-DECLFILENAME
+          - -Wno-UNUSEDSIGNAL
+
+  # Synthesis target — vendor-agnostic stub. As you pick a vendor, add a
+  # `default_tool` (e.g. vivado, quartus, icestorm) and the matching
+  # constraints fileset under filesets above. The structural shape is here
+  # so the flow is one config edit away.
+  syn:
+    filesets:
+      - rtl
+    toplevel: plover
+
+parameters:
+  COUNTER_WIDTH:
+    datatype: int
+    description: Width of the embedded counter (bits)
+    paramtype: vlogparam
+    default: 8
