@@ -1,0 +1,92 @@
+CAPI=2:
+# FuseSoC core for the syscon unit.
+#
+# Two generators run at build time:
+#   * rdl_gen    — regenerate the Python regmap, HTML docs, and C header
+#                  from syscon.rdl (same wrapper as axil_shell).
+#   * version_gen — read git and emit syscon_version_pkg.svh next to the RTL.
+# Both run before the rtl fileset is consumed, so the unit always builds with
+# the current register map description and current git version info.
+
+name: ::syscon:0.1.0
+description: System controller (version + reset + features registers, AXI4-Lite)
+
+filesets:
+  rtl:
+    files:
+      - rtl/syscon.sv
+    file_type: systemVerilogSource
+
+  rdl:
+    files:
+      - rdl/syscon.rdl
+    file_type: user
+
+# Register generators. The "rdl_gen" wrapper is reused (lives in the syscon
+# rdl dir; same shape as axil_shell's). "version_gen" is a thin wrapper around
+# gen_version.py that emits the .svh into the build dir.
+generators:
+  rdl_gen:
+    command: ../../tools/rdl_gen.py
+    interpreter: python3
+    description: Regenerate register map + docs from the SystemRDL source
+
+  version_gen:
+    command: ../../tools/version_gen.py
+    interpreter: python3
+    description: Emit syscon_version_pkg.svh from git
+
+targets:
+  default:
+    filesets:
+      - rtl
+      - rdl
+    generate:
+      - rdl_regs
+      - version_header
+    toplevel: syscon
+
+  lint:
+    default_tool: verilator
+    filesets:
+      - rtl
+    generate:
+      - rdl_regs
+      - version_header
+    toplevel: syscon
+    tools:
+      verilator:
+        mode: lint-only
+        verilator_options:
+          - -Wall
+          - -Wno-DECLFILENAME
+          - -Wno-UNUSEDSIGNAL
+
+generate:
+  rdl_regs:
+    generator: rdl_gen
+    parameters:
+      rdl_file: rdl/syscon.rdl
+      regmap_out: dv/regmap.py
+      c_header_basename: syscon_regs
+  version_header:
+    generator: version_gen
+    parameters:
+      out: syscon_version_pkg.svh
+
+parameters:
+  VERSION_OVERRIDE:
+    datatype: int
+    description: Override the VERSION register value (non-zero wins over the header)
+    paramtype: vlogparam
+    default: 0
+  VERSION_HASH_OVERRIDE:
+    datatype: int
+    description: Override the VERSION_HASH register value
+    paramtype: vlogparam
+    default: 0
+  SOFT_RST_CYCLES:
+    datatype: int
+    description: Width of the soft-reset pulse in clk cycles
+    paramtype: vlogparam
+    default: 8

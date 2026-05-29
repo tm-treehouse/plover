@@ -1,0 +1,95 @@
+// =============================================================================
+// syscon.rdl
+//
+// SystemRDL 2.0 description of the syscon (system controller) register map.
+// This block sits behind an AXI4-Lite slave and provides version, reset
+// control, and feature-bits visibility to software.
+//
+// Map (32-bit registers, byte addresses):
+//   0x00  VERSION       RO   semver + dirty bit (built-time derived)
+//   0x04  VERSION_HASH  RO   short git hash (built-time derived)
+//   0x08  SOFT_RST      RW   write-1 pulse: bit0 = reset core
+//   0x0C  RESET_CAUSE   RO   latched at reset: bit0 POR, bit1 SOFT
+//   0x10  FEATURES      RO   capability bits (build-time constant)
+// =============================================================================
+
+addrmap syscon {
+    name = "System controller register map";
+    desc = "Version, reset, and feature-bits registers for the project.";
+
+    default regwidth = 32;
+    default accesswidth = 32;
+
+    // 0x00 ---------------------------------------------------------------
+    reg {
+        name = "Version";
+        desc = "Semantic version of the synthesized design plus a dirty bit.
+                Built-time derived from git by default; can be overridden by
+                a top-level parameter for sim/test.";
+
+        field { sw = r; hw = r; desc = "Major"; }     MAJOR[7:0]   = 0;
+        field { sw = r; hw = r; desc = "Minor"; }     MINOR[15:8]  = 0;
+        field { sw = r; hw = r; desc = "Patch"; }     PATCH[23:16] = 0;
+        field { sw = r; hw = r; desc = "Dirty bit (uncommitted changes at build)"; }
+            DIRTY[24:24] = 0;
+        field { sw = r; hw = r; desc = "Reserved"; }  RSVD[31:25]  = 0;
+    } VERSION @ 0x00;
+
+    // 0x04 ---------------------------------------------------------------
+    reg {
+        name = "Version hash";
+        desc = "Short git hash of the build, as a 32-bit hex value
+                (zero-padded if the hash is shorter than 8 hex chars).";
+        field { sw = r; hw = r; desc = "Hash"; } VALUE[31:0] = 0;
+    } VERSION_HASH @ 0x04;
+
+    // 0x08 ---------------------------------------------------------------
+    reg {
+        name = "Soft reset request";
+        desc = "Write 1 to bit 0 to pulse the core soft-reset (asserts
+                soft_rst_n low for several cycles). The field is
+                self-clearing in hardware; reads always return 0.";
+
+        field {
+            sw = rw;
+            hw = r;
+            desc = "Write 1 to request a core soft reset";
+            singlepulse;     // hardware clears after one cycle
+        } CORE[0:0] = 0;
+        field { sw = r; hw = r; desc = "Reserved"; } RSVD[31:1] = 0;
+    } SOFT_RST @ 0x08;
+
+    // 0x0C ---------------------------------------------------------------
+    reg {
+        name = "Reset cause";
+        desc = "Latched at reset; indicates what triggered the most recent
+                reset. Software clears these bits by writing 1 (W1C).";
+
+        field {
+            sw = rw;
+            hw = w;
+            desc = "Power-on reset (or external rst_n) asserted last";
+            woclr;           // software write-1-to-clear
+        } POR[0:0] = 0;
+        field {
+            sw = rw;
+            hw = w;
+            desc = "Software soft-reset triggered the last reset";
+            woclr;
+        } SOFT[1:1] = 0;
+        field { sw = r; hw = r; desc = "Reserved"; } RSVD[31:2] = 0;
+    } RESET_CAUSE @ 0x0C;
+
+    // 0x10 ---------------------------------------------------------------
+    reg {
+        name = "Feature bits";
+        desc = "Build-time constant capability bits. Lets software discover
+                which optional sub-units are present in this build.";
+
+        field { sw = r; hw = r; desc = "Counter sub-unit present"; }
+            HAS_COUNTER[0:0] = 1;
+        field { sw = r; hw = r; desc = "Reserved for future features"; }
+            RSVD[31:1] = 0;
+    } FEATURES @ 0x10;
+
+} ;

@@ -1,4 +1,4 @@
-# `plover/syn/` — synthesis scaffolding
+# `top/syn/` — synthesis scaffolding
 
 This subtree is intentionally vendor-agnostic at this stage; it lays down
 the **directory pattern** a real synthesis flow will drop into, not an
@@ -17,7 +17,7 @@ syn/
 * **Pin constraints** (XDC / QSF / PCF / LPF) — board-specific.
 * **Tool invocation** — once a vendor is picked, this becomes a
   `default_tool` + `tools:` block on the `syn` target in
-  `plover/plover.core`, and `fusesoc run --target=syn plover` drives it
+  `top/plover.core`, and `fusesoc run --target=syn plover` drives it
   through Edalize. The shell script here is a placeholder for the
   pre-FuseSoC alternative if needed.
 * **IP / vendor primitives** — none in plover.sv today (the design is
@@ -29,7 +29,7 @@ syn/
 
 The minimum to make `syn` operational:
 
-1. Add a constraints fileset to `plover/plover.core` and depend on it from
+1. Add a constraints fileset to `top/plover.core` and depend on it from
    the `syn` target.
 2. Set `default_tool` to the vendor (e.g. `vivado`, `quartus`, `icestorm`)
    and add the matching `tools:` block.

@@ -7,13 +7,16 @@ to follow semantic versioning.
 ## [Unreleased]
 
 ### Added
-- `plover/` project top sitting parallel to `units/`: top-level RTL
-  (`plover/rtl/plover.sv`) that instantiates `axil_shell` and `counter`,
-  integration testbench (`plover/dv/`) that checks the AXI path and counter
-  wiring through the hierarchy, and synthesis scaffolding under `plover/syn/`
+- `top/` project top sitting parallel to `units/`: top-level RTL
+  (`top/rtl/plover.sv`) that instantiates `axil_shell` and `counter`,
+  integration testbench (`top/dv/`) that checks the AXI path and counter
+  wiring through the hierarchy, and synthesis scaffolding under `top/syn/`
   (vendor-agnostic stubs).
-- `plover/plover.core` — FuseSoC core depending on the unit cores, so a
+- `top/plover.core` — FuseSoC core depending on the unit cores, so a
   single resolve pulls in the full design.
+- README section documenting the project-wide **32-bit register-width
+  decision** and a roadmap for migrating selected registers (or the whole
+  interface) to 64-bit if a future need arises.
 
 ### Changed
 - **Layout reorganized to colocate RTL and DV per unit** under
@@ -23,14 +26,14 @@ to follow semantic versioning.
 - Per-unit `dv/` directories are now flat (no inner Python package); cocotb
   `test_module` references and intra-package imports updated accordingly.
 - `conftest.py` moved to repo root; pytest `testpaths` widened to
-  `[units, plover]`.
+  `[units, top]`.
 - RDL generator writes regmap to `units/axil_shell/dv/regmap.py` (flat).
 - README layout tree and "Adding a new sub-unit" section rewritten;
   new "Project top" section added.
 - Makefile `clean` updated for the new layout.
 
 ### Notes
-- The integration in `plover/rtl/plover.sv` is structural-only at this
+- The integration in `top/rtl/plover.sv` is structural-only at this
   stage: `axil_shell` does not yet expose its `CONTROL` register bits as
   ports, so the counter's `enable`/`clear` are tied to constants. Comments
   in both the RTL and the integration testbench flag this as a follow-up.

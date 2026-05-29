@@ -45,7 +45,7 @@ plover/                                project root
       counter.core
       rtl/counter.sv
       dv/<...same shape as axil_shell/dv/...>
-  plover/                              project top — integrates the units above
+  top/                              project top — integrates the units above
     plover.core                        FuseSoC core (depends on axil_shell + counter)
     rtl/plover.sv                      top-level integration (structural wiring)
     dv/
@@ -90,6 +90,85 @@ regenerate manually (the build does it automatically):
 python rdl/gen_regs.py            # regmap + docs + C header
 python rdl/gen_regs.py --no-docs  # just the Python regmap
 ```
+
+## Register width: 32-bit (and how to migrate to 64-bit)
+
+**Plover uses 32-bit registers over a 32-bit AXI4-Lite interface throughout.**
+That's the deliberate default: all `.rdl` files declare
+`default regwidth = 32; default accesswidth = 32;`, all unit RTL has
+`DATA_WIDTH = 32`, and the testbenches use cocotbext-axi's 32-bit defaults.
+
+### Why 32-bit
+
+* **It matches the protocol.** AXI4-Lite has two legal data widths, 32 and
+  64. 32-bit is the near-universal common case — every host CPU, every
+  off-the-shelf IP block, and all the cocotbext-axi defaults are built
+  around it. Going to 64-bit AXI-Lite cuts the project off from a lot of
+  reference IP without much in return for the values we actually carry.
+* **Nothing in the current maps needs more than 32 bits.** VERSION,
+  VERSION_HASH, SOFT_RST, RESET_CAUSE, FEATURES (syscon) and SCRATCH,
+  CONTROL, STATUS, ID (axil_shell) all comfortably fit. Doubling the
+  register-file area without a value that needs the width is pure cost.
+* **Tooling alignment.** The pyuvm-dv-lib / OpenTitan dv_lib conventions
+  this project builds on, the cocotbext-axi BFMs the agents wrap, and the
+  PeakRDL exporters all assume 32-bit by default. Staying with the grain
+  keeps the project simple.
+
+### When you'd actually want 64-bit
+
+There are real reasons to revisit this, all of which would be triggered by
+a specific need rather than a general preference:
+
+* A 64-bit host CPU needs a *single atomic* read/write of a value wider
+  than 32 bits (a timestamp, a 64-bit counter, a pointer).
+* A specific register has values >32 bits and the LO/HI split would
+  introduce real software hazards.
+* The project standardizes on a 64-bit interconnect for other reasons
+  (DMA, AXI4-full peripherals on the same fabric).
+
+### Roadmap if/when we migrate
+
+Two distinct migration paths, depending on what you actually need:
+
+**Path A — selected 64-bit registers, keep 32-bit AXI-Lite** *(recommended
+first step)*. SystemRDL lets you set `regwidth = 64; accesswidth = 32;` on
+just the registers that need it; PeakRDL generates LO/HI access logic so
+the AXI interface stays 32-bit. This earns its keep only where genuinely
+needed and leaves everything else alone.
+
+Concrete steps:
+1. In the `.rdl` for the affected register, set `regwidth = 64;
+   accesswidth = 32;` on that one register (or on the addrmap, if many).
+2. Re-run the RDL generator (`uv run python tools/gen_regs.py`) — the
+   Python regmap will pick up the new register widths; the C header gets
+   `_LO`/`_HI` accessors.
+3. Update the unit's RTL to expose the register as two 32-bit AXI
+   offsets. The hand-written `axil_shell.sv`/`syscon.sv` need the case
+   statement extended; or generate the regblock from PeakRDL-regblock.
+4. Update the Python reference model in the unit's `dv/<unit>_env.py` to
+   model the LO/HI access and the implementation-defined update
+   semantics (typically: write LO buffers, write HI commits; reads
+   snapshot on LO read). Add a vseq that exercises out-of-order access.
+5. Re-run `uv sync && uv run pytest` and confirm.
+
+**Path B — full 64-bit AXI-Lite throughout** *(larger, only if needed)*.
+Every unit's AXI interface widens to 64-bit data. Steps:
+1. RDL: `default regwidth = 64; default accesswidth = 64;` in every
+   `.rdl`. Re-run the generator; field positions don't change but
+   register widths do.
+2. RTL: widen `s_axil_wdata`/`s_axil_rdata` to `[63:0]` and `s_axil_wstrb`
+   to `[7:0]`. Adjust internal register storage to 64-bit. Address
+   decode shifts from `>>2` to `>>3`.
+3. DV: the cocotbext-axi `AxiLiteMaster` is width-inferred from the bus
+   signals, so it handles 64-bit automatically. Update the harness's
+   `byte_lanes` use and verify the reference models, then re-run.
+4. Project top (`top/rtl/plover.sv`) widens the same way; integration
+   testbench keeps working as long as the BFM is rebuilt against the new
+   bus.
+
+In both paths, the FuseSoC build, generators, and pytest harness need no
+changes — they're width-agnostic. The work is concentrated in RDL, RTL,
+and reference models, in that order.
 
 ## Quick start
 
@@ -177,14 +256,14 @@ signal handles), and change the driver / monitor / `RefModel` to match your
 block. FuseSoC and pytest pick the new unit up automatically (FuseSoC scans
 the whole tree for `.core` files; pytest matches `test_*_pytest.py`).
 
-## Project top (`plover/`)
+## Project top (`top/`)
 
-The `plover/` directory sits parallel to `units/` and holds the project's
+The `top/` directory sits parallel to `units/` and holds the project's
 top-level integration — the RTL that instantiates the verified sub-units,
 its own integration testbench, and synthesis scaffolding.
 
 ```
-plover/
+top/
   plover.core      FuseSoC core (depends on ::axil_shell and ::counter)
   rtl/plover.sv    structural top: instantiates axil_shell + counter
   dv/              integration testbench (cocotb + pyuvm)
@@ -207,13 +286,13 @@ test fail loudly, so the connectivity check has real teeth.
 **Known limitation, intentionally left as scaffolding**: `axil_shell` does
 not currently expose its `CONTROL` register bits as ports, so the counter's
 `enable`/`clear` are tied to constants in `plover.sv` rather than driven
-from `CONTROL.ENABLE`. Comments in both `plover/rtl/plover.sv` and the
+from `CONTROL.ENABLE`. Comments in both `top/rtl/plover.sv` and the
 integration testbench flag this as a follow-up — extending the shell to
 publish CONTROL is the natural next step, after which the integration test
 grows a "write CONTROL.ENABLE=0, confirm count freezes" check.
 
-The synthesis scaffolding under `plover/syn/` is intentionally
-vendor-agnostic at this stage; see `plover/syn/README.md` for how to wire a
+The synthesis scaffolding under `top/syn/` is intentionally
+vendor-agnostic at this stage; see `top/syn/README.md` for how to wire a
 real synthesis flow into the `syn` target of `plover.core` once a vendor is
 picked.
 

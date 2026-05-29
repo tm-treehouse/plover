@@ -1,13 +1,7 @@
-"""
-FuseSoC + pytest harness for the plover project-top testbench.
-
-The ``plover`` core depends on ``axil_shell`` and ``counter``, so FuseSoC's
-EDAM resolves the full source list (top integration + both sub-units) and
-the cocotb runner builds the whole hierarchy.
-
-Same shape as the unit harnesses under units/<unit>/dv/; the only knobs that
-differ are the core name, the test module, and the source-back-mapping
-(sources come from multiple unit dirs, not just one).
+"""FuseSoC + pytest harness for the syscon unit. Same shape as the other
+units, except this one passes ``parameters=`` to the Verilator build so the
+VERSION/VERSION_HASH registers have deterministic values for scoreboard
+comparison (matching the EXPECTED_* constants in test_syscon.py).
 """
 from __future__ import annotations
 
@@ -20,14 +14,18 @@ import yaml
 
 from cocotb_tools.runner import get_runner
 
-CORE_NAME = "plover"
-TEST_MODULE = "test_plover"
-TESTCASES = ["smoke"]
+CORE_NAME = "syscon"
+TEST_MODULE = "test_syscon"
+TESTCASES = ["smoke", "reset_cause"]
 RESOLVE_TARGET = "lint"
 
-HERE = Path(__file__).resolve().parent          # top/dv
-PROJ_DIR = HERE.parent                          # top/
-ROOT = PROJ_DIR.parent                          # repo root
+HERE = Path(__file__).resolve().parent
+UNIT_DIR = HERE.parent
+ROOT = UNIT_DIR.parents[1]
+
+# Must match EXPECTED_VERSION / EXPECTED_VERSION_HASH in test_syscon.py.
+VERSION_OVERRIDE      = 0xCAFE_F00D
+VERSION_HASH_OVERRIDE = 0x1234_5678
 
 BUILD_ARGS = {
     "verilator": ["--trace", "--trace-structs",
@@ -63,44 +61,51 @@ def _fusesoc_edam() -> dict:
     return yaml.safe_load(candidates[-1].read_text())
 
 
-def _sources_from_edam(edam: dict) -> tuple[list[Path], str]:
-    """Map EDAM staged paths back to the live RTL.
+def _sources_from_edam(edam: dict) -> tuple[list[Path], str, list[Path]]:
+    """Extract HDL source paths, toplevel, and include dirs from an EDAM manifest.
 
-    With a multi-core design, EDAM file names look like:
-        src/plover_0.1.0/rtl/plover.sv
-        src/axil_shell_0.1.0/rtl/axil_shell.sv
-        src/counter_0.1.0/rtl/counter.sv
-
-    We use the staged ``<core>_<ver>`` segment to choose the right live dir:
-    ``plover_*`` -> ``top/``, otherwise ``units/<core>/``.
+    Generated SystemVerilog headers (``is_include_file: true``) are not
+    passed as sources — they're consumed via the ``\\`include`` directive.
+    Their directories are returned separately so the harness can pass them
+    to Verilator as ``-I`` paths.
     """
     hdl_types = {"verilogSource", "systemVerilogSource"}
     sources: list[Path] = []
+    include_dirs: set[Path] = set()
+    candidates = sorted(
+        (ROOT / "build").rglob(f"{CORE_NAME}_*/*/*.eda.yml"),
+        key=lambda p: p.stat().st_mtime,
+    )
+    eda_dir = candidates[-1].parent
+
     for f in edam.get("files", []):
         if f.get("file_type") not in hdl_types:
             continue
-        parts = Path(f["name"]).parts
-        # Find the staged core dir (the segment before "rtl/").
-        if "rtl" not in parts:
+        name = f["name"]
+        # Headers: record their containing directory and move on.
+        if f.get("is_include_file"):
+            include_dirs.add((eda_dir / name).parent.resolve())
             continue
-        rtl_idx = parts.index("rtl")
-        staged_core = parts[rtl_idx - 1]  # "<corename>_<ver>"
-        rel = Path(*parts[rtl_idx:])      # "rtl/<file>"
-        core_name = staged_core.rsplit("_", 1)[0]
-        live_dir = PROJ_DIR if core_name == CORE_NAME else ROOT / "units" / core_name
-        sources.append(live_dir / rel)
+        parts = Path(name).parts
+        if parts and parts[0] == "src" and len(parts) >= 3:
+            core_dir = parts[1].rsplit("_", 1)[0]
+            rel = Path(*parts[2:])
+            sources.append(ROOT / "units" / core_dir / rel)
+        else:
+            sources.append(eda_dir / name)
     toplevel = edam.get("toplevel", CORE_NAME)
     if isinstance(toplevel, list):
         toplevel = toplevel[0]
-    return sources, toplevel
+    return sources, toplevel, sorted(include_dirs)
 
 
 @pytest.fixture(scope="module")
 def design():
     edam = _fusesoc_edam()
-    sources, toplevel = _sources_from_edam(edam)
+    sources, toplevel, include_dirs = _sources_from_edam(edam)
     assert sources, f"no HDL sources resolved from FuseSoC EDAM for {CORE_NAME}"
-    return {"sources": sources, "toplevel": toplevel}
+    return {"sources": sources, "toplevel": toplevel,
+            "include_dirs": include_dirs}
 
 
 def _run(design, cocotb_testcase: str) -> None:
@@ -109,11 +114,17 @@ def _run(design, cocotb_testcase: str) -> None:
         _resolve_verilator_root()
     waves = os.getenv("WAVES", "0") not in ("0", "", "false", "False")
 
+    extra_build = [f"-I{d}" for d in design["include_dirs"]]
+
     runner = get_runner(sim)
     runner.build(
         sources=design["sources"],
         hdl_toplevel=design["toplevel"],
-        build_args=BUILD_ARGS.get(sim, []),
+        build_args=BUILD_ARGS.get(sim, []) + extra_build,
+        parameters={
+            "VERSION_OVERRIDE": VERSION_OVERRIDE,
+            "VERSION_HASH_OVERRIDE": VERSION_HASH_OVERRIDE,
+        },
         waves=waves,
         always=True,
     )
@@ -128,5 +139,5 @@ def _run(design, cocotb_testcase: str) -> None:
 
 
 @pytest.mark.parametrize("cocotb_testcase", TESTCASES)
-def test_plover(design, cocotb_testcase):
+def test_syscon(design, cocotb_testcase):
     _run(design, cocotb_testcase)

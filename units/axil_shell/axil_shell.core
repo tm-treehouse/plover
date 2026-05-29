@@ -29,12 +29,12 @@ filesets:
     file_type: user
 
 # Register the RDL generator so this core (or any dependent) can invoke it.
-# It runs rdl/rdl_gen.py, which regenerates the Python regmap (into the dv/
-# package) plus HTML docs + C header from the .rdl, and emits a core listing
-# the generated header.
+# It runs tools/rdl_gen.py (shared across units), which regenerates the
+# Python regmap, HTML docs, and C header from the .rdl, and emits a core
+# listing the generated header.
 generators:
   rdl_gen:
-    command: rdl/rdl_gen.py
+    command: ../../tools/rdl_gen.py
     interpreter: python3
     description: Regenerate register map + docs from the SystemRDL source
 
@@ -74,6 +74,7 @@ generate:
     generator: rdl_gen
     parameters:
       rdl_file: rdl/axil_shell.rdl
+      c_header_basename: axil_shell_regs
 
 parameters:
   ADDR_WIDTH:

@@ -134,11 +134,14 @@ def run_peakrdl(subcmd: list[str], desc: str) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Generate register artifacts from RDL")
-    ap.add_argument("--rdl", default="rdl/axil_shell.rdl", type=Path)
-    ap.add_argument("--outdir", default="rdl/gen", type=Path,
+    ap.add_argument("--rdl", required=True, type=Path)
+    ap.add_argument("--outdir", default="gen", type=Path,
                     help="output dir for docs + C header")
     ap.add_argument("--regmap-out", default="dv/regmap.py", type=Path,
                     help="path for the generated Python regmap consumed by the TB")
+    ap.add_argument("--c-header-name", default=None,
+                    help="basename (without .h) for the C header; "
+                         "defaults to '<addrmap>_regs'")
     ap.add_argument("--no-docs", action="store_true",
                     help="skip HTML + C header (only emit regmap.py)")
     args = ap.parse_args()
@@ -149,8 +152,11 @@ def main() -> None:
     generate_regmap(rdl, args.regmap_out.resolve())
 
     if not args.no_docs:
+        # Default C-header basename derives from the RDL filename so the
+        # output is predictable per unit (e.g. syscon.rdl -> syscon_regs.h).
+        c_basename = args.c_header_name or f"{rdl.stem}_regs"
         run_peakrdl(["html", str(rdl), "-o", str(outdir / "html")], "HTML docs")
-        run_peakrdl(["c-header", str(rdl), "-o", str(outdir / "axil_shell_regs.h")],
+        run_peakrdl(["c-header", str(rdl), "-o", str(outdir / f"{c_basename}.h")],
                     "C header")
 
 
