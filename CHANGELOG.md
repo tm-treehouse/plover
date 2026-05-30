@@ -27,6 +27,19 @@ to follow semantic versioning.
 - README section documenting the project-wide **32-bit register-width
   decision** and a roadmap for migrating selected registers (or the whole
   interface) to 64-bit if a future need arises.
+- **`top/host/` — host-side C++ "firmware" subtree.** Plain C ABI
+  (`plover_host_ops` callback struct + `plover_hello_world` entry point)
+  built as `libplover_hello.so` via `top/host/Makefile`. The Python side
+  (`top/dv/firmware_bridge.py`) loads the .so via ctypes and wraps the
+  cocotb `AxiLiteMaster` instances in callbacks using cocotb 2.x's
+  `cocotb.task.bridge` / `cocotb.task.resume`, so C++ register accesses
+  block the bridge thread while the cocotb event loop services one bus
+  transaction at a time. A new pyuvm test (`firmware_smoke` in
+  `test_plover.py`) calls into the C++ from cocotb, proving the round-trip
+  (C++ → Python → cocotb → Verilator → RTL → back) works end-to-end. Bug
+  injection on the C++ side makes the test fail loudly, so it has real
+  teeth. Build artifacts (`*.o`, `*.so`) are git-ignored and rebuilt
+  on-demand by the pytest harness when sources are newer.
 
 ### Changed
 - **Layout reorganized to colocate RTL and DV per unit** under

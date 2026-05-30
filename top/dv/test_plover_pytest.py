@@ -30,7 +30,7 @@ from cocotb_tools.runner import get_runner
 
 CORE_NAME = "plover"
 TEST_MODULE = "test_plover"
-TESTCASES = ["smoke"]
+TESTCASES = ["smoke", "firmware_smoke"]
 RESOLVE_TARGET = "lint"
 
 HERE = Path(__file__).resolve().parent          # top/dv

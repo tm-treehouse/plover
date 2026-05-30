@@ -32,6 +32,8 @@ from cocotbext.axi import AxiLiteBus, AxiLiteMaster
 
 from pyuvm import uvm_test
 
+from firmware_bridge import run_hello_world
+
 
 CLK_PERIOD_NS = 10
 
@@ -137,5 +139,41 @@ class smoke(uvm_test):
             self.logger.info(
                 f"soft-reset gating OK: counter held at 0, resumed to "
                 f"0x{after:x} after the window")
+        finally:
+            self.drop_objection()
+
+
+@pyuvm.test()
+class firmware_smoke(uvm_test):
+    """Drive the chip from the C++ host-side firmware (top/host/).
+
+    Same wiring as `smoke` (clock, reset, two AXI-Lite masters), but the
+    actual test logic lives in C++ and is called via ctypes. The C++ talks
+    to the chip through host_ops callbacks that route through cocotb's
+    bridge mechanism; from the C++'s perspective it's just calling
+    ``shell_read(addr)`` and ``syscon_read(addr)``.
+
+    This proves the C++ -> Python -> cocotb -> Verilator -> RTL chain
+    works end-to-end. The actual checks are minimal (read shell ID and
+    syscon VERSION) — the point of this test is the plumbing, not the
+    coverage. Richer firmware-style tests can grow on top of the same
+    bridge once the pattern's in place.
+    """
+
+    async def run_phase(self) -> None:
+        self.raise_objection()
+        try:
+            dut = cocotb.top
+            await _start_clock_and_reset(dut)
+
+            shell  = _make_master(dut, "s_axil")
+            syscon = _make_master(dut, "s_syscon")
+
+            rc = await run_hello_world(
+                shell, syscon,
+                expected_syscon_version=EXPECTED_SYSCON_VERSION,
+            )
+            assert rc == 0, f"plover_hello_world returned {rc} (non-zero = check failed)"
+            self.logger.info("C++ firmware hello-world completed successfully")
         finally:
             self.drop_objection()

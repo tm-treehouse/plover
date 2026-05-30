@@ -51,6 +51,11 @@ plover/                                project root
     dv/
       test_plover.py                   cocotb entry: integration smoke test
       test_plover_pytest.py            pytest harness for the top
+      firmware_bridge.py               ctypes loader + cocotb bridge for host/
+    host/                              host-side C++ "firmware" that drives plover via AXI
+      plover_hello.h
+      plover_hello.cc
+      Makefile
     syn/                               synthesis scaffolding (vendor-agnostic stubs)
       constraints/plover.sdc
       scripts/build.sh
@@ -305,6 +310,58 @@ The synthesis scaffolding under `top/syn/` is intentionally
 vendor-agnostic at this stage; see `top/syn/README.md` for how to wire a
 real synthesis flow into the `syn` target of `plover.core` once a vendor is
 picked.
+
+## Host-side C++ (`top/host/`)
+
+`top/host/` holds C++ "firmware" — host-side code that drives the chip
+through register reads and writes. The same source could later
+cross-compile and run on a real CPU mastering AXI on a board; only the
+read/write implementations change. Today it runs against the cocotb
+testbench: the C++ calls `host_ops.shell_read(addr)` / `syscon_read(addr)`
+etc., and those callbacks are wired (via cocotb 2.x's
+`cocotb.task.bridge` / `cocotb.task.resume`) to the same `AxiLiteMaster`
+instances the existing tests use.
+
+```
+top/host/
+  plover_hello.h    C ABI: host_ops callback struct + entry points
+  plover_hello.cc   the actual firmware test routines
+  Makefile          builds libplover_hello.so
+```
+
+The plumbing on the Python side lives in `top/dv/firmware_bridge.py`. It
+builds the `.so` on demand (rebuilds when sources are newer than the
+artifact), loads it via ctypes, and exposes `run_hello_world(shell,
+syscon, expected_version)` as an awaitable that runs the C++ test routine.
+
+The current C++ test (`plover_hello_world`) reads `axil_shell`'s ID
+register and `syscon`'s VERSION through the host callbacks and checks both
+match. It exists to prove the round-trip works — C++ → Python → cocotb →
+Verilator → RTL → back. Bug-injection on the C++ side (e.g. wrong expected
+ID) makes the corresponding pytest test fail with a clean diagnostic, so
+the bridge has real test teeth.
+
+The cocotb entry that calls it is `firmware_smoke` in
+`top/dv/test_plover.py`, parametrized through `test_plover_pytest.py` and
+picked up automatically by `uv run pytest`. Runtime impact: about one
+extra second on top of the existing top tests, since the .so is small and
+the build is cached.
+
+Useful properties:
+
+* **No new build system at the top level.** The shared object is rebuilt
+  on-demand by the pytest harness via `top/host/Makefile`, so adding new
+  firmware files is just editing the Makefile's `SRCS` list — pytest picks
+  up the new code automatically.
+
+* **Portable C++17.** Nothing platform-specific in the source. The C ABI
+  surface (`plover_host_ops`, function pointers) is what makes this
+  ctypes-loadable without help.
+
+* **Real firmware-style code.** The C++ has no idea what an AXI handshake
+  looks like; it sees register reads and writes. The same routine could
+  run on a real chip with `mmap`'d MMIO regions instead of host_ops
+  callbacks.
 
 ## How the flow fits together
 

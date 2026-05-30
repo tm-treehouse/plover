@@ -58,6 +58,7 @@ clean:
 	find . -name '*.result.xml' -delete 2>/dev/null || true
 	find . -name 'dump.vcd' -delete 2>/dev/null || true
 	find . -name 'dump.fst' -delete 2>/dev/null || true
+	$(MAKE) -C top/host clean 2>/dev/null || true
 
 distclean: clean
 	rm -rf .venv
