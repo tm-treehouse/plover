@@ -1,27 +1,26 @@
-"""
-cocotb entry point for the plover project-top integration testbench.
+"""cocotb entry point for the plover project-top integration testbench.
 
-Scope is integration-level, not re-verification of the sub-units. The smoke
-test exercises three things, in order:
+After the xbar refactor the top exposes a single AXI4-Lite slave port
+(s_axil_*) and one AXI4-Stream slave (s_axis_*). The xbar inside plover
+routes AXI-Lite transactions by address:
+    0x0000_0000 .. 0x0000_0FFF  ->  axil_shell  (4 KB page)
+    0x0000_1000 .. 0x0000_1FFF  ->  syscon      (4 KB page)
+Addresses outside those return AXI DECERR (resp = 2'b11).
 
-1. **Two AXI paths.** Both AXI4-Lite slave ports are alive: read the
-   axil_shell ID register (0x0C = 0xC0C07B01) via s_axil_*, and read the
-   syscon VERSION register via s_syscon_* (parameter override sets it to
-   a known value).
+Scope is integration-level, not re-verification of the sub-units. Four
+@pyuvm.test() classes live here:
 
-2. **The counter is wired and clocked.** Sample ``dut.count`` across
-   several cycles and confirm it advances by the cycle count.
-
-3. **Soft-reset gates the counter.** Write 1 to syscon's SOFT_RST.CORE
-   (offset 0x08) over the syscon slave; syscon pulses soft_rst_n low for
-   8 cycles, which holds the counter in reset. After that window passes
-   the counter resumes from 0 and we confirm it.
-
-If you regress the soft_rst_n wiring (e.g. tie it high in plover.sv), the
-third check fails: the counter keeps counting through the soft-reset
-window instead of snapping to 0.
+  smoke               — both pages reachable, counter wired, soft-reset
+                        gates the counter, unmapped addresses return DECERR.
+  firmware_smoke      — same wiring but the test logic runs in C from
+                        top/host/ via the ctypes bridge.
+  firmware_concurrent — cocotb AXIS stimulus runs in parallel with the
+                        C firmware, both on independent buses.
 """
 from __future__ import annotations
+
+import os
+from pathlib import Path
 
 import cocotb
 import pyuvm
@@ -38,26 +37,32 @@ from firmware_bridge import run_hello_world
 
 CLK_PERIOD_NS = 10
 
-# axil_shell ID register
+# Page bases at the top boundary (xbar address map).
+SHELL_BASE  = 0x0000_0000
+SYSCON_BASE = 0x0000_1000
+UNMAPPED    = 0x0000_2000   # neither page covers this; xbar returns DECERR
+
+# axil_shell ID register, page-relative offset.
 SHELL_ID_OFFSET   = 0x0C
 SHELL_ID_EXPECTED = 0xC0C07B01
 
-# syscon VERSION (0x00), SOFT_RST (0x08). Override values match the
-# parameters: dict in test_plover_pytest.py.
+# syscon VERSION (0x00), SOFT_RST (0x08), page-relative offsets.
 SYSCON_VERSION_OFFSET    = 0x00
 SYSCON_SOFT_RST_OFFSET   = 0x08
 EXPECTED_SYSCON_VERSION  = 0xCAFE_F00D
 SYSCON_SOFT_RST_CYCLES   = 8       # syscon default; matches u_syscon.SOFT_RST_CYCLES
 
+RESP_OKAY   = 0
+RESP_DECERR = 3
+
 
 async def _start_clock_and_reset(dut) -> None:
     cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
-    # Idle every master-driven AXI input on both slaves through reset.
-    for prefix in ("s_axil", "s_syscon"):
-        for sig in (f"{prefix}_awvalid", f"{prefix}_wvalid", f"{prefix}_bready",
-                    f"{prefix}_arvalid", f"{prefix}_rready"):
-            if hasattr(dut, sig):
-                getattr(dut, sig).value = 0
+    # Idle the single host-side AXI-Lite slave port through reset.
+    for sig in ("s_axil_awvalid", "s_axil_wvalid", "s_axil_bready",
+                "s_axil_arvalid", "s_axil_rready"):
+        if hasattr(dut, sig):
+            getattr(dut, sig).value = 0
     # Idle AXI-Stream input.
     for sig in ("s_axis_tvalid", "s_axis_tlast", "s_axis_tdata"):
         if hasattr(dut, sig):
@@ -69,7 +74,7 @@ async def _start_clock_and_reset(dut) -> None:
     await ClockCycles(dut.clk, 2)
 
 
-def _make_master(dut, prefix: str) -> AxiLiteMaster:
+def _make_master(dut, prefix: str = "s_axil") -> AxiLiteMaster:
     return AxiLiteMaster(
         AxiLiteBus.from_prefix(dut, prefix),
         dut.clk,
@@ -78,9 +83,15 @@ def _make_master(dut, prefix: str) -> AxiLiteMaster:
     )
 
 
+def _include_dirs_from_env() -> list[Path]:
+    raw = os.environ.get("PLOVER_RDL_INCLUDE_DIRS", "")
+    return [Path(p) for p in raw.split(os.pathsep) if p]
+
+
 @pyuvm.test()
 class smoke(uvm_test):
-    """Integration smoke: two AXI paths, counter wiring, soft-reset gating."""
+    """Integration smoke: both pages reachable, counter wired, soft-reset
+    gates the counter, unmapped addresses return DECERR."""
 
     async def run_phase(self) -> None:
         self.raise_objection()
@@ -88,27 +99,43 @@ class smoke(uvm_test):
             dut = cocotb.top
             await _start_clock_and_reset(dut)
 
-            shell  = _make_master(dut, "s_axil")
-            syscon = _make_master(dut, "s_syscon")
+            host = _make_master(dut)
+            byte_lanes = host.write_if.byte_lanes
 
-            # ---- 1) Both AXI paths reach their slaves --------------------
-            resp = await shell.read(SHELL_ID_OFFSET, 4)
+            # ---- 1) Both pages reachable through the xbar -------------
+            resp = await host.read(SHELL_BASE + SHELL_ID_OFFSET, byte_lanes)
             got = int.from_bytes(resp.data, "little")
+            assert resp.resp == RESP_OKAY, f"shell read resp {resp.resp}"
             assert got == SHELL_ID_EXPECTED, (
-                f"axil_shell ID register: got 0x{got:08x}, "
+                f"axil_shell.ID via xbar: got 0x{got:08x}, "
                 f"expected 0x{SHELL_ID_EXPECTED:08x}")
-            self.logger.info(
-                f"axil_shell path OK: ID=0x{got:08x} via s_axil_*")
+            self.logger.info(f"shell page OK: ID=0x{got:08x}")
 
-            resp = await syscon.read(SYSCON_VERSION_OFFSET, 4)
+            resp = await host.read(SYSCON_BASE + SYSCON_VERSION_OFFSET, byte_lanes)
             got = int.from_bytes(resp.data, "little")
+            assert resp.resp == RESP_OKAY, f"syscon read resp {resp.resp}"
             assert got == EXPECTED_SYSCON_VERSION, (
-                f"syscon VERSION register: got 0x{got:08x}, "
+                f"syscon.VERSION via xbar: got 0x{got:08x}, "
                 f"expected 0x{EXPECTED_SYSCON_VERSION:08x}")
-            self.logger.info(
-                f"syscon path OK: VERSION=0x{got:08x} via s_syscon_*")
+            self.logger.info(f"syscon page OK: VERSION=0x{got:08x}")
 
-            # ---- 2) Counter is wired in and advancing --------------------
+            # ---- 2) Unmapped addresses return DECERR -----------------
+            wresp = await host.write(UNMAPPED, (0xDEADBEEF).to_bytes(byte_lanes, "little"))
+            assert wresp.resp == RESP_DECERR, (
+                f"write to unmapped 0x{UNMAPPED:08x}: got resp {wresp.resp}, "
+                f"expected DECERR (3)")
+            rresp = await host.read(UNMAPPED, byte_lanes)
+            assert rresp.resp == RESP_DECERR, (
+                f"read from unmapped 0x{UNMAPPED:08x}: got resp {rresp.resp}, "
+                f"expected DECERR (3)")
+            self.logger.info("DECERR OK: unmapped 0x%08x rejected" % UNMAPPED)
+
+            # And the mapped pages still work after the DECERR (xbar
+            # state machines aren't stuck on the rejected access).
+            resp = await host.read(SHELL_BASE + SHELL_ID_OFFSET, byte_lanes)
+            assert resp.resp == RESP_OKAY, "shell broken after DECERR"
+
+            # ---- 3) Counter is wired in and advancing ----------------
             await RisingEdge(dut.clk)
             start = int(dut.count.value)
             await ClockCycles(dut.clk, 10)
@@ -116,53 +143,39 @@ class smoke(uvm_test):
             mask = (1 << len(dut.count)) - 1
             advanced = (end - start) & mask
             assert advanced == 10, (
-                f"counter advance: expected 10 cycles, got {advanced} "
+                f"counter advance: expected 10, got {advanced} "
                 f"(start=0x{start:x} end=0x{end:x})")
             self.logger.info(f"counter free-running OK: advanced {advanced}")
 
-            # ---- 3) Soft-reset via syscon gates the counter --------------
-            # Write 1 to SOFT_RST.CORE. syscon pulses soft_rst_n low for
-            # SOFT_RST_CYCLES cycles; that holds the counter in reset and
-            # zeros its output. After the window, the counter resumes from 0.
-            await syscon.write(
-                SYSCON_SOFT_RST_OFFSET, (1).to_bytes(4, "little"))
-            # The write completes, then the pulse takes effect one cycle
-            # later, then the counter is held for SOFT_RST_CYCLES. Sample
-            # mid-window to confirm the counter is being held at 0.
+            # ---- 4) Soft-reset via syscon gates the counter ----------
+            await host.write(
+                SYSCON_BASE + SYSCON_SOFT_RST_OFFSET,
+                (1).to_bytes(byte_lanes, "little"))
             await ClockCycles(dut.clk, 3)
             mid = int(dut.count.value)
             assert mid == 0, (
                 f"soft-reset gating: expected counter held at 0 mid-window, "
                 f"got 0x{mid:x}")
-            # Wait past the soft-reset window plus a couple of cycles, then
-            # confirm the counter has started counting again from 0.
             await ClockCycles(dut.clk, SYSCON_SOFT_RST_CYCLES + 2)
             after = int(dut.count.value)
             assert 1 <= after <= SYSCON_SOFT_RST_CYCLES + 4, (
-                f"soft-reset release: expected counter to be small and "
-                f"counting again after the reset window, got 0x{after:x}")
+                f"soft-reset release: expected counter small after window, "
+                f"got 0x{after:x}")
             self.logger.info(
-                f"soft-reset gating OK: counter held at 0, resumed to "
-                f"0x{after:x} after the window")
+                f"soft-reset gating OK: held at 0 mid-pulse, "
+                f"resumed to 0x{after:x} after")
         finally:
             self.drop_objection()
 
 
 @pyuvm.test()
 class firmware_smoke(uvm_test):
-    """Drive the chip from the C++ host-side firmware (top/host/).
+    """Drive the chip from the C host-side firmware (top/host/).
 
-    Same wiring as `smoke` (clock, reset, two AXI-Lite masters), but the
-    actual test logic lives in C++ and is called via ctypes. The C++ talks
-    to the chip through host_ops callbacks that route through cocotb's
-    bridge mechanism; from the C++'s perspective it's just calling
-    ``shell_read(addr)`` and ``syscon_read(addr)``.
-
-    This proves the C++ -> Python -> cocotb -> Verilator -> RTL chain
-    works end-to-end. The actual checks are minimal (read shell ID and
-    syscon VERSION) — the point of this test is the plumbing, not the
-    coverage. Richer firmware-style tests can grow on top of the same
-    bridge once the pattern's in place.
+    Same wiring as `smoke` but the actual test logic lives in C and is
+    called via ctypes through one AXI-Lite master. The C calls into
+    host_ops callbacks that route through cocotb's bridge mechanism.
+    Proves C -> Python -> cocotb -> Verilator -> RTL works end-to-end.
     """
 
     async def run_phase(self) -> None:
@@ -171,53 +184,35 @@ class firmware_smoke(uvm_test):
             dut = cocotb.top
             await _start_clock_and_reset(dut)
 
-            shell  = _make_master(dut, "s_axil")
-            syscon = _make_master(dut, "s_syscon")
-
-            # The harness sets PLOVER_RDL_INCLUDE_DIRS to the FuseSoC build
-            # paths where peakrdl-cpp dropped axil_shell_regs.hh and
-            # syscon_regs.hh. firmware_bridge passes these to the .so build.
-            import os
-            from pathlib import Path
-            raw = os.environ.get("PLOVER_RDL_INCLUDE_DIRS", "")
-            include_dirs = [Path(p) for p in raw.split(os.pathsep) if p]
+            host = _make_master(dut)
+            include_dirs = _include_dirs_from_env()
 
             rc = await run_hello_world(
-                shell, syscon,
+                host,
+                shell_base=SHELL_BASE,
+                syscon_base=SYSCON_BASE,
                 expected_syscon_version=EXPECTED_SYSCON_VERSION,
                 include_dirs=include_dirs,
             )
             assert rc == 0, f"plover_hello_world returned {rc} (non-zero = check failed)"
-            self.logger.info("C++ firmware hello-world completed successfully")
+            self.logger.info("C firmware hello-world completed successfully")
         finally:
             self.drop_objection()
 
 
 @pyuvm.test()
 class firmware_concurrent(uvm_test):
-    """Run cocotb AXI-Stream stimulus AND the C++ firmware at the same time.
+    """Run cocotb AXI-Stream stimulus AND the C firmware at the same time.
 
-    Demonstrates the two layers of the testbench acting in parallel on
-    different bus interfaces of the DUT:
+    Both stimuli sources run live in the same simulator run on independent
+    buses:
+      * cocotb's AxiStreamSource pushes N beats into stream_sink via
+        s_axis_*, started with cocotb.start_soon so it runs concurrently.
+      * The C firmware does its register-access work on the single
+        s_axil_* port via the bridge.
 
-      * cocotb's AxiStreamSource pushes N beats into the stream_sink via
-        s_axis_*, started with cocotb.start_soon so it runs concurrently
-        with whatever follows.
-      * The C++ firmware does its register-access work on the AXI-Lite
-        slaves via the bridge — completely independent of the stream side.
-
-    Concurrency check at the end:
-      * C++ returned 0 (firmware OK).
-      * The sink received exactly the N beats we sent, with the expected
-        XOR of their data values.
-
-    The AXIS stimulus pushes its beats with no delay between them, so it
-    should typically complete *before* the C++ does all its register
-    operations (those go through cocotbext-axi's serialized handshake on
-    AXI-Lite). The point isn't strict overlap of the last cycles; it's
-    that both stimuli sources were live in the same simulator run and
-    targeted independent buses without the test orchestrating their
-    interleaving.
+    Concurrency check at the end: C returned 0, sink received expected
+    beats and XOR, AND at least one beat landed during the firmware run.
     """
 
     async def run_phase(self) -> None:
@@ -226,14 +221,12 @@ class firmware_concurrent(uvm_test):
             dut = cocotb.top
             await _start_clock_and_reset(dut)
 
-            shell  = _make_master(dut, "s_axil")
-            syscon = _make_master(dut, "s_syscon")
+            host = _make_master(dut)
             axis_src = AxiStreamSource(
                 AxiStreamBus.from_prefix(dut, "s_axis"),
                 dut.clk, dut.rst_n, reset_active_level=False,
             )
 
-            # The AXIS pattern that runs in parallel with the firmware.
             stream_pattern = [
                 0x00000001, 0x00000002, 0x00000004, 0x00000008,
                 0xDEADBEEF, 0x12345678, 0xA5A5A5A5, 0x5A5A5A5A,
@@ -248,51 +241,31 @@ class firmware_concurrent(uvm_test):
             byte_lanes = len(dut.s_axis_tdata) // 8
 
             async def push_stream() -> None:
-                """Background coroutine: push every beat with no inter-beat gap."""
                 for w in stream_pattern:
                     await axis_src.send(w.to_bytes(byte_lanes, "little"))
                 await axis_src.wait()
 
-            # Kick off the stream stimulus and IMMEDIATELY proceed to the
-            # C++ firmware. cocotb.start_soon schedules push_stream as a
-            # concurrent task; we don't await it yet.
             stream_task = cocotb.start_soon(push_stream())
-
-            # The harness sets PLOVER_RDL_INCLUDE_DIRS to the FuseSoC build
-            # paths where peakrdl-cpp dropped axil_shell_regs.hh and
-            # syscon_regs.hh. firmware_bridge passes these to the .so build.
-            import os
-            from pathlib import Path
-            raw = os.environ.get("PLOVER_RDL_INCLUDE_DIRS", "")
-            include_dirs = [Path(p) for p in raw.split(os.pathsep) if p]
+            include_dirs = _include_dirs_from_env()
 
             rc = await run_hello_world(
-                shell, syscon,
+                host,
+                shell_base=SHELL_BASE,
+                syscon_base=SYSCON_BASE,
                 expected_syscon_version=EXPECTED_SYSCON_VERSION,
                 include_dirs=include_dirs,
             )
             assert rc == 0, f"plover_hello_world returned {rc} (non-zero = check failed)"
 
-            # Concurrency check: when the C++ firmware returns, AXIS should
-            # already have made progress in the sink. If beat_count is still
-            # 0 here, the AXIS stimulus was somehow serialized after the C++
-            # rather than running in parallel — a regression we want to
-            # catch. Standalone characterization shows >3 beats land within
-            # 5 cycles of t=0, so a non-zero count post-firmware is a
-            # reasonable threshold.
             mid_run_beats = int(dut.sink_beat_count.value)
             assert mid_run_beats > 0, (
-                f"expected AXIS to have pushed beats during the C++ "
+                f"expected AXIS to have pushed beats during the C "
                 f"firmware execution, but sink_beat_count = {mid_run_beats}")
             self.logger.info(
                 f"during-firmware probe: sink_beat_count = {mid_run_beats} "
-                f"(confirms AXIS ran concurrently with C++)")
+                f"(confirms AXIS ran concurrently with C)")
 
-            # Wait for the AXIS stimulus to drain (it almost certainly
-            # already has, since AXIS pushes faster than serialized AXI-Lite).
             await stream_task
-            # Give the sink a couple of cycles for the last beat to commit
-            # before we sample its outputs.
             await ClockCycles(dut.clk, 3)
 
             beat_count = int(dut.sink_beat_count.value)
@@ -306,7 +279,7 @@ class firmware_concurrent(uvm_test):
                 f"AXIS data_xor: got 0x{data_xor:08x}, "
                 f"expected 0x{expected_xor:08x}")
             self.logger.info(
-                "concurrent test OK: C++ firmware completed AND AXIS sink "
+                "concurrent test OK: C firmware completed AND AXIS sink "
                 "received the expected stimulus")
         finally:
             self.drop_objection()

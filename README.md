@@ -55,9 +55,16 @@ plover/                                project root
       stream_sink.core
       rtl/stream_sink.sv
       dv/<...same shape, no RDL...>
+    axil_xbar/                         AXI-Lite 1-to-N decoder w/ register stages
+      axil_xbar.core
+      rtl/axil_xbar.sv                 the decoder
+      rtl/axil_skid_buffer.sv          register-slice helper used inside
+      dv/axil_xbar_dv_top.sv           DV harness (xbar + 2 RAM stubs)
+      dv/axil_ram_stub.sv              behavioural AXI-Lite RAM (DV only)
+      dv/<...test_axil_xbar.py + pytest harness...>
   top/                              project top — integrates the units above
-    plover.core                        FuseSoC core (depends on all four unit cores)
-    rtl/plover.sv                      top-level integration (structural wiring)
+    plover.core                        FuseSoC core (depends on all five unit cores)
+    rtl/plover.sv                      top-level integration (single AXI-Lite slave via xbar)
     dv/
       test_plover.py                   cocotb entry: smoke, firmware_smoke, firmware_concurrent
       test_plover_pytest.py            pytest harness for the top
@@ -279,17 +286,26 @@ its own integration testbench, and synthesis scaffolding.
 
 ```
 top/
-  plover.core      FuseSoC core (depends on ::axil_shell, ::counter, ::syscon, ::stream_sink)
-  rtl/plover.sv    structural top: instantiates all four sub-units
+  plover.core      FuseSoC core (depends on ::axil_shell, ::counter, ::syscon, ::stream_sink, ::axil_xbar)
+  rtl/plover.sv    structural top: instantiates all sub-units behind one AXI-Lite port
   dv/              integration testbench (cocotb + pyuvm)
   host/            host-side C firmware (see next section)
   syn/             synthesis scaffolding (vendor-agnostic — see syn/README.md)
 ```
 
-The top exposes three external bus interfaces:
+The top exposes two external bus interfaces:
 
-* `s_axil_*` — AXI4-Lite slave routed to `axil_shell`
-* `s_syscon_*` — AXI4-Lite slave routed to `syscon`
+* `s_axil_*` — AXI4-Lite slave (32-bit address, 32-bit data). The single
+  host-facing register bus. The xbar inside the top routes by address:
+  | Range                              | Slave        |
+  | ---------------------------------- | ------------ |
+  | `0x0000_0000` .. `0x0000_0FFF`     | `axil_shell` |
+  | `0x0000_1000` .. `0x0000_1FFF`     | `syscon`     |
+  | anything else                      | DECERR       |
+
+  4 KB pages give each peripheral room to grow without remap. The xbar is
+  a unit at `units/axil_xbar/` with its own DV (see below).
+
 * `s_axis_*` — AXI4-Stream slave routed to `stream_sink` (TDATA[31:0],
   TVALID, TREADY, TLAST). The sink absorbs every beat without
   backpressure, counts beats into `sink_beat_count`, and folds TDATA
@@ -297,34 +313,39 @@ The top exposes three external bus interfaces:
   outputs.
 
 `syscon`'s `soft_rst_n` is ANDed with the global `rst_n` to form the
-`counter`'s reset, so a software write to `SOFT_RST.CORE` on the syscon
-slave holds the counter in reset for the syscon pulse width while the
-AXI endpoints stay alive.
+`counter`'s reset, so a software write to `SOFT_RST.CORE` (at host-visible
+address `0x0000_1008`) holds the counter in reset for the syscon pulse
+width while the AXI endpoints stay alive.
 
 The integration testbench has narrow scope by design: it does not re-verify
 the sub-units (they have their own DV under `units/`) — it only checks that
 the integration is **wired and alive**. Three pyuvm tests live here:
 
 `smoke`
-: Reads `axil_shell`'s ID via `s_axil_*` and `syscon`'s VERSION via
-  `s_syscon_*` (both AXI paths). Samples `dut.count` across cycles
-  (counter is clocked). Writes `1` to `syscon`'s `SOFT_RST.CORE`,
+: Reads `axil_shell.ID` at `0x0000_000C` and `syscon.VERSION` at
+  `0x0000_1000` via the single AXI master. Writes/reads an unmapped
+  address (`0x0000_2000`) and confirms the xbar returns DECERR.
+  Samples `dut.count` across cycles. Writes `1` to `syscon.SOFT_RST.CORE`,
   verifies the counter is held at 0 mid-window and has restarted from
-  0 after the soft-reset pulse ends (soft_rst_n → counter wiring).
+  0 after the soft-reset pulse ends.
 
 `firmware_smoke`
 : Same setup, but the *test logic* runs in C from `top/host/` via the
-  ctypes bridge. See the "Host-side C" section below.
+  ctypes bridge. The bridge exposes one read/write pair (matching the
+  unified bus topology) and the firmware computes absolute addresses
+  from host-supplied page bases. See the "Host-side C" section below.
 
 `firmware_concurrent`
 : cocotb pushes AXI-Stream stimulus into `stream_sink` in a background
   coroutine while the C firmware does its register work. Both stimuli
   sources are live simultaneously on independent buses; the test asserts
-  the C ran to success AND the sink received the expected pattern.
+  the C ran to success AND the sink received the expected pattern, with
+  an extra probe assertion that beats landed *during* the firmware run.
 
-Bug injection on any of the wired-up paths (e.g. tying `counter_enable=0`,
-bypassing `soft_rst_n`, truncating the AXIS stimulus, mis-stating an
-expected register value in the C) makes the relevant check fail loudly.
+Bug injection on any of the wired-up paths (swapping the xbar page bases,
+tying `counter_enable=0`, bypassing `soft_rst_n`, truncating the AXIS
+stimulus, mis-stating an expected register value in the C) makes the
+relevant check fail loudly.
 
 **Known limitation, intentionally left as scaffolding**: `axil_shell` does
 not currently expose its `CONTROL` register bits as ports, so the counter's
@@ -358,11 +379,30 @@ top/host/
 
 The plumbing on the Python side lives in `top/dv/firmware_bridge.py`. It
 builds the `.so` on demand, loads it via ctypes, and exposes
-`run_hello_world(shell, syscon, expected_version, include_dirs)` as an
-awaitable that runs the C test routine. `include_dirs` carries the
+`run_hello_world(host, *, shell_base, syscon_base, expected_syscon_version, include_dirs)`
+as an awaitable that runs the C test routine. `include_dirs` carries the
 FuseSoC build paths where peakrdl-cheader dropped the generated register
 headers (`axil_shell_regs.h`, `syscon_regs.h`) so the firmware compile
 picks them up.
+
+### Single-bus model
+
+After the project-top xbar refactor, the host sees one AXI-Lite master at
+the top of the chip and each peripheral lives at a page base on that
+unified bus. The `plover_host_ops` struct therefore carries a single
+`read`/`write` callback pair (not per-peripheral pairs), and
+`plover_hello_world` takes the peripherals' page bases as arguments so
+firmware can compute absolute addresses:
+
+```c
+int plover_hello_world(const plover_host_ops* ops,
+                       uint32_t shell_base,
+                       uint32_t syscon_base,
+                       uint32_t expected_syscon_version);
+```
+
+This mirrors how real software would see the chip: one MMIO window, with
+each peripheral mapped at a known base.
 
 ### Register access via auto-generated C headers
 
@@ -379,13 +419,15 @@ useful artifacts per unit:
   `_reset` macros — e.g. `AXIL_SHELL__ID__VALUE_bm` and
   `AXIL_SHELL__ID__VALUE_bp` for the VALUE field of the ID register.
 
-The firmware uses two small helper macros to keep call sites readable:
+The firmware uses three small helper macros to keep call sites readable:
 
 ```c
-#define REG_OFFSET(type, field) ((uint32_t)offsetof(type, field))
-#define FIELD_GET(raw, prefix)  (((raw) & prefix##_bm) >> prefix##_bp)
+#define REG_OFFSET(type, field)     ((uint32_t)offsetof(type, field))
+#define REG_ADDR(base, type, field) ((base) + REG_OFFSET(type, field))
+#define FIELD_GET(raw, prefix)      (((raw) & prefix##_bm) >> prefix##_bp)
 
-uint32_t id_raw   = ops->shell_read(REG_OFFSET(axil_shell_t, ID));
+uint32_t id_addr  = REG_ADDR(shell_base, axil_shell_t, ID);
+uint32_t id_raw   = ops->read(id_addr);
 uint32_t id_value = FIELD_GET(id_raw, AXIL_SHELL__ID__VALUE);
 ```
 
@@ -398,20 +440,20 @@ change that moves the ID value also fails the build, not just the test.
 
 `firmware_smoke`
 : The minimum useful check: read the shell ID and the syscon VERSION
-  through the host_ops callbacks and confirm both match. Proves the
-  chain C → Python → cocotb → Verilator → RTL → back works end-to-end.
+  through the single host_ops callbacks and confirm both match. Proves
+  the chain C → Python → cocotb → Verilator → RTL → back works end-to-end.
   Bug-injection on either expected value fails the test loudly.
 
 `firmware_concurrent`
 : cocotb's `AxiStreamSource` pushes a 16-beat pattern into the
   `stream_sink` unit via `s_axis_*` on a background coroutine
   (`cocotb.start_soon`) while the C firmware reads its registers on
-  the AXI-Lite paths. After both finish, the test asserts the C ran
+  the AXI-Lite path. After both finish, the test asserts the C ran
   to success AND the sink's `beat_count` matches the expected pattern
   length with the expected XOR — proving the two stimuli sources were
   live at the same simulated time on independent buses. The test
-  includes a probe assertion that some beats land *before* the
-  firmware returns; if AXIS was somehow being serialized after the C
+  includes a probe assertion that some beats land *during* the
+  firmware run; if AXIS was somehow being serialized after the C
   rather than running in parallel, that assertion catches it.
 
 ### Useful properties

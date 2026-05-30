@@ -1,13 +1,18 @@
 /* =============================================================================
  * plover_hello.c — host-side test routines, plain C.
  *
- * The register-access layer is the PeakRDL-cheader output for each unit:
- *   axil_shell_regs.h:  axil_shell_t (packed struct) + per-field bm/bp macros
- *   syscon_regs.h:      syscon_t     (packed struct) + per-field bm/bp macros
+ * After the project-top xbar refactor the host sees a single AXI-Lite
+ * port; each peripheral lives at a page base on that bus. Register
+ * addresses are therefore computed as:
  *
- * The packed struct gives us byte offsets via offsetof(); the bm/bp macros
- * give us bitfield extraction. Together that means no magic numbers in
- * this file — the RDL is the single source of truth.
+ *      <page_base> + offsetof(<unit>_t, <register>)
+ *
+ * which keeps the RDL as the single source of truth for register offsets
+ * (via the packed struct emitted by peakrdl-cheader) and lets the host
+ * environment relocate any peripheral by passing a different page base.
+ *
+ * Bitfields within registers are still extracted with the generator's
+ * _bm/_bp macros.
  *
  * No platform headers, no simulator hooks: all host coupling is through
  * the plover_host_ops struct of function pointers, so the same .c could
@@ -23,10 +28,13 @@
 #include <stddef.h>
 #include <stdio.h>
 
-/* Compute the byte offset of a register field within its containing
- * register block. Uses the packed struct emitted by peakrdl-cheader so a
- * typo in the field name fails at compile time rather than runtime. */
+/* Byte offset of a register field within its register block. Uses the
+ * packed struct emitted by peakrdl-cheader so a typo in the field name
+ * fails at compile time rather than runtime. */
 #define REG_OFFSET(type, field) ((uint32_t)offsetof(type, field))
+
+/* Absolute bus address of a register: page base + register offset. */
+#define REG_ADDR(base, type, field) ((base) + REG_OFFSET(type, field))
 
 /* Extract a field from a raw register value using the bm/bp macros that
  * peakrdl-cheader generates. The macros are formed as
@@ -35,10 +43,11 @@
  * Call site:  FIELD_GET(raw, AXIL_SHELL__ID__VALUE) */
 #define FIELD_GET(raw, prefix) (((raw) & prefix##_bm) >> prefix##_bp)
 
-/* Known-constant chip ID baked into the axil_shell RTL. Not generated —
- * the RDL declares the reset value, but the firmware needs the literal
- * to compare against, so we restate it here with a static_assert that it
- * matches the generated reset value. */
+/* Known-constant chip ID baked into the axil_shell RTL. The RDL declares
+ * the reset value, but the firmware needs the literal to compare against,
+ * so we restate it here with a _Static_assert pinning it to the generated
+ * reset macro. Any RDL change that moves the ID's reset value will fail
+ * the build (not just the test). */
 #define EXPECTED_SHELL_ID 0xC0C07B01u
 _Static_assert(EXPECTED_SHELL_ID == AXIL_SHELL__ID__VALUE_reset,
                "EXPECTED_SHELL_ID drifted from the RDL's declared reset value");
@@ -56,19 +65,19 @@ static void log_msg(const plover_host_ops* ops, const char* fmt, ...) {
 }
 
 int plover_hello_world(const plover_host_ops* ops,
+                       uint32_t shell_base,
+                       uint32_t syscon_base,
                        uint32_t expected_syscon_version) {
-    if (!ops || !ops->shell_read || !ops->shell_write
-             || !ops->syscon_read || !ops->syscon_write) {
+    if (!ops || !ops->read || !ops->write) {
         return -1;  /* misconfigured host */
     }
 
-    /* ---- axil_shell.ID ----
-     * Read the register at offsetof(axil_shell_t, ID), then extract the
-     * VALUE field with the generated bm/bp pair. */
-    const uint32_t id_raw = ops->shell_read(REG_OFFSET(axil_shell_t, ID));
+    /* ---- axil_shell.ID ---- */
+    const uint32_t id_addr = REG_ADDR(shell_base, axil_shell_t, ID);
+    const uint32_t id_raw  = ops->read(id_addr);
     const uint32_t id_value = FIELD_GET(id_raw, AXIL_SHELL__ID__VALUE);
-    log_msg(ops, "plover firmware: read axil_shell.ID -> raw=0x%08x value=0x%08x",
-            id_raw, id_value);
+    log_msg(ops, "plover firmware: read axil_shell.ID @ 0x%08x -> raw=0x%08x value=0x%08x",
+            id_addr, id_raw, id_value);
     if (id_value != EXPECTED_SHELL_ID) {
         log_msg(ops, "FAIL: axil_shell.ID.VALUE = 0x%08x, expected 0x%08x",
                 id_value, EXPECTED_SHELL_ID);
@@ -76,11 +85,12 @@ int plover_hello_world(const plover_host_ops* ops,
     }
 
     /* ---- syscon.VERSION ----
-     * The full 32-bit register matches the override passed by the host.
-     * No bitfield extraction needed for this whole-register compare; the
-     * caller knows what value to expect. */
-    const uint32_t version = ops->syscon_read(REG_OFFSET(syscon_t, VERSION));
-    log_msg(ops, "plover firmware: read syscon.VERSION -> 0x%08x", version);
+     * The full 32-bit register matches the override the host passes in.
+     * No bitfield extraction; the caller knows what value to expect. */
+    const uint32_t version_addr = REG_ADDR(syscon_base, syscon_t, VERSION);
+    const uint32_t version = ops->read(version_addr);
+    log_msg(ops, "plover firmware: read syscon.VERSION @ 0x%08x -> 0x%08x",
+            version_addr, version);
     if (version != expected_syscon_version) {
         log_msg(ops, "FAIL: syscon.VERSION = 0x%08x, expected 0x%08x",
                 version, expected_syscon_version);

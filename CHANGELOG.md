@@ -7,6 +7,53 @@ to follow semantic versioning.
 ## [Unreleased]
 
 ### Added
+- **`units/axil_xbar/` — AXI4-Lite 1-to-N decoder with optional register
+  stages.** New sub-unit at the usual `units/<name>/` shape. The decoder
+  routes each AXI-Lite transaction to one of N downstream slaves based on
+  per-slave `SLAVE_BASE`/`SLAVE_MASK` parameter arrays (4 KB pages are
+  the natural choice; the unit DV uses `0x0000_0000` and `0x0000_1000`).
+  Unmapped addresses return `RESP_DECERR` (`2'b11`). Two small FSMs
+  (write side: `W_IDLE` → `W_DATA` → `W_RESP`; read side: `R_IDLE` →
+  `R_RESP`) hold the in-flight target per channel so AW/W decode results
+  persist until the matching B/R returns; read and write paths are fully
+  independent so a read to slave A can be in flight while a write to
+  slave B is in flight. Optional `INPUT_REG_STAGES` / `OUTPUT_REG_STAGES`
+  parameters insert AXI-Lite-compliant skid buffers on the master-side
+  and per-slave channels for timing closure (default 0 = combinational).
+  A small helper module `axil_skid_buffer` supports `DEPTH={0,1,N}`.
+  Standalone DV at `units/axil_xbar/dv/`: a tiny `axil_ram_stub`
+  behavioural slave + `axil_xbar_dv_top` wrapper that exposes one master
+  port and runs three test cases (`smoke` — routing isolation,
+  `decerr` — unmapped → DECERR + recovery, `concurrent` — independent
+  R+W) across three stage configurations `(0,0)`, `(1,0)`, `(0,1)`, for
+  nine parametrized runs.
+- **plover top consolidated to a single host-side AXI-Lite port.**
+  `plover.sv` now exposes one `s_axil_*` slave (32-bit address, 32-bit
+  data) instead of the previous parallel `s_axil_*` + `s_syscon_*`. An
+  `axil_xbar` inside the top fans the unified bus out to `axil_shell`
+  (page `0x0000_0000`) and `syscon` (page `0x0000_1000`); the
+  peripherals keep their 8-bit AWADDR/ARADDR (decoder strips upper bits
+  when forwarding, which avoids touching peripheral RTL). Two new
+  parameters `XBAR_INPUT_REG_STAGES` / `XBAR_OUTPUT_REG_STAGES` (default
+  0) let the integrator dial in register stages without code edits.
+  `top/plover.core` adds `::axil_xbar` to its dependencies.
+- **Host firmware and bridge collapsed to one bus.** `plover_host_ops`
+  is now a single `read`/`write` callback pair (was four: shell_*/
+  syscon_*). `plover_hello_world` takes `shell_base` and `syscon_base`
+  arguments so the firmware can compute absolute addresses on the
+  unified bus. The C uses a new `REG_ADDR(base, type, field)` helper
+  that combines the host-supplied page base with `offsetof(type, field)`
+  from the peakrdl-cheader output. The Python bridge
+  (`firmware_bridge.py`) shrinks correspondingly: one `AxiLiteMaster`,
+  three callbacks (read/write/log), and `run_hello_world` takes the
+  master plus keyword-only `shell_base`/`syscon_base`/
+  `expected_syscon_version`/`include_dirs`.
+- **Integration `smoke` test exercises DECERR.** The top's smoke test
+  now writes and reads an unmapped address (`0x0000_2000`) and confirms
+  both return `RESP_DECERR`. Bug-injection (swapping the xbar's
+  `SLAVE_BASE` array) fails the smoke test loudly with a clean
+  diagnostic (`axil_shell.ID via xbar: got 0x00000001, expected
+  0xc0c07b01`).
 - `top/` project top sitting parallel to `units/`: top-level RTL
   (`top/rtl/plover.sv`) that instantiates `axil_shell` and `counter`,
   integration testbench (`top/dv/`) that checks the AXI path and counter

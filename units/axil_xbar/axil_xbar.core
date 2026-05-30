@@ -1,0 +1,58 @@
+CAPI=2:
+# FuseSoC core for the axil_xbar unit. Pure RTL — no RDL.
+
+name: ::axil_xbar:0.1.0
+description: 1-to-N AXI4-Lite decoder (with optional register stages)
+
+filesets:
+  rtl:
+    files:
+      - rtl/axil_skid_buffer.sv
+      - rtl/axil_xbar.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+      - rtl
+    toplevel: axil_xbar
+
+  lint:
+    default_tool: verilator
+    filesets:
+      - rtl
+    toplevel: axil_xbar
+    tools:
+      verilator:
+        mode: lint-only
+        verilator_options:
+          - -Wall
+          - -Wno-DECLFILENAME
+          - -Wno-UNUSEDSIGNAL
+
+parameters:
+  N_SLAVES:
+    datatype: int
+    description: Number of downstream slave ports
+    paramtype: vlogparam
+    default: 2
+  ADDR_WIDTH:
+    datatype: int
+    description: AXI-Lite address bus width (bits)
+    paramtype: vlogparam
+    default: 32
+  DATA_WIDTH:
+    datatype: int
+    description: AXI-Lite data bus width (bits)
+    paramtype: vlogparam
+    default: 32
+  INPUT_REG_STAGES:
+    datatype: int
+    description: Register stages on the master-side channels (0 = combinational)
+    paramtype: vlogparam
+    default: 0
+  OUTPUT_REG_STAGES:
+    datatype: int
+    description: Register stages on each slave-side channel (0 = combinational)
+    paramtype: vlogparam
+    default: 0

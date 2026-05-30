@@ -1,16 +1,19 @@
 """
 Loader + cocotb bridge for the C host-side firmware library.
 
-The C code in ``top/host/`` exposes test routines that operate on the chip
-through callbacks (read/write a 32-bit register on either AXI slave). This
-module:
+After the xbar refactor at the project top, all peripheral access goes
+through a single host-side AXI-Lite master. The C side has correspondingly
+collapsed to one read(addr) / write(addr) pair (no more shell_* vs
+syscon_*); page bases are passed in alongside the version expectation so
+the firmware can address each peripheral by its absolute bus address.
+
+This module:
 
 * Builds and loads ``libplover_hello.so`` via ctypes.
-* Wraps two cocotb ``AxiLiteMaster`` instances (shell + syscon) in C-callable
+* Wraps the single cocotb ``AxiLiteMaster`` in C-callable read/write
   callbacks using cocotb 2.x's :func:`cocotb.task.bridge` /
   :func:`cocotb.task.resume`. The C thread blocks on each callback while
-  the cocotb event loop advances the simulation by exactly one bus
-  transaction, then returns the result to C.
+  the cocotb event loop services exactly one bus transaction.
 * Exposes :func:`run_hello_world` which the test calls with ``await``.
 
 Why this looks the way it does
@@ -50,12 +53,11 @@ _LogFn   = ctypes.CFUNCTYPE(None, ctypes.c_char_p)
 
 
 class _HostOps(ctypes.Structure):
+    """Mirror of plover_host_ops in plover_hello.h (single read/write pair)."""
     _fields_ = [
-        ("shell_read",   _ReadFn),
-        ("shell_write",  _WriteFn),
-        ("syscon_read",  _ReadFn),
-        ("syscon_write", _WriteFn),
-        ("log",          _LogFn),
+        ("read",  _ReadFn),
+        ("write", _WriteFn),
+        ("log",   _LogFn),
     ]
 
 
@@ -65,7 +67,7 @@ def _ensure_built(include_dirs: list[Path] | None = None) -> Path:
     """Build the .so. Returns the path.
 
     Unconditional rebuild: this is the path through which the FuseSoC-built
-    generated headers (axil_shell_regs.hh, syscon_regs.hh) reach the C++
+    generated headers (axil_shell_regs.h, syscon_regs.h) reach the C
     compile, and those headers live under different build-dir paths each
     time the harness runs. Skipping the rebuild based purely on source
     mtimes would silently reuse a .so compiled against stale headers when
@@ -77,7 +79,6 @@ def _ensure_built(include_dirs: list[Path] | None = None) -> Path:
         env["EXTRA_INCLUDES"] = " ".join(f"-I{d}" for d in include_dirs)
     _log.info(f"building {LIB_PATH.name} "
               f"(includes: {env.get('EXTRA_INCLUDES', 'none')})")
-    # Force rebuild from clean to ensure the new include paths are used.
     subprocess.run(["make", "-C", str(HOST_DIR), "clean"], check=True,
                    stdout=subprocess.DEVNULL)
     subprocess.run(["make", "-C", str(HOST_DIR)], check=True, env=env)
@@ -86,85 +87,92 @@ def _ensure_built(include_dirs: list[Path] | None = None) -> Path:
 
 def _load(include_dirs: list[Path] | None = None) -> ctypes.CDLL:
     lib = ctypes.CDLL(str(_ensure_built(include_dirs)))
-    lib.plover_hello_world.argtypes = [ctypes.POINTER(_HostOps), ctypes.c_uint32]
+    # int plover_hello_world(const plover_host_ops* ops,
+    #                        uint32_t shell_base,
+    #                        uint32_t syscon_base,
+    #                        uint32_t expected_syscon_version)
+    lib.plover_hello_world.argtypes = [
+        ctypes.POINTER(_HostOps),
+        ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+    ]
     lib.plover_hello_world.restype = ctypes.c_int
     return lib
 
 
-# ---- Bridge: sync callbacks that delegate to async AXI masters -----------
+# ---- Bridge: sync callbacks that delegate to the async AXI master --------
 
-def _make_callbacks(shell: AxiLiteMaster, syscon: AxiLiteMaster):
-    """Build C-callable read/write callbacks bound to the given masters.
+def _make_callbacks(host: AxiLiteMaster):
+    """Build C-callable read/write callbacks bound to the given master.
 
     The async ``master.read`` / ``master.write`` coroutines are wrapped with
-    ``@resume`` so they can be called from the bridge thread (where C++ is
+    ``@resume`` so they can be called from the bridge thread (where C is
     running). The C-callable wrappers are plain Python functions; ctypes
     handles the C↔Python conversion.
     """
-
-    byte_lanes = shell.write_if.byte_lanes  # 4 for 32-bit AXI-Lite
+    byte_lanes = host.write_if.byte_lanes  # 4 for 32-bit AXI-Lite
 
     @resume
-    async def _aread(master: AxiLiteMaster, addr: int) -> int:
-        resp = await master.read(addr, byte_lanes)
+    async def _aread(addr: int) -> int:
+        resp = await host.read(addr, byte_lanes)
         return int.from_bytes(resp.data, "little")
 
     @resume
-    async def _awrite(master: AxiLiteMaster, addr: int, data: int) -> None:
-        await master.write(addr, (data & 0xFFFFFFFF).to_bytes(byte_lanes, "little"))
+    async def _awrite(addr: int, data: int) -> None:
+        await host.write(addr, (data & 0xFFFFFFFF).to_bytes(byte_lanes, "little"))
 
-    def shell_read(addr: int) -> int:
-        return _aread(shell, int(addr))
+    def read_cb(addr: int) -> int:
+        return _aread(int(addr))
 
-    def shell_write(addr: int, data: int) -> None:
-        _awrite(shell, int(addr), int(data))
-
-    def syscon_read(addr: int) -> int:
-        return _aread(syscon, int(addr))
-
-    def syscon_write(addr: int, data: int) -> None:
-        _awrite(syscon, int(addr), int(data))
+    def write_cb(addr: int, data: int) -> None:
+        _awrite(int(addr), int(data))
 
     def log_cb(msg_bytes) -> None:
         msg = msg_bytes.decode("utf-8", errors="replace") if msg_bytes else ""
         _log.info(msg)
 
-    return shell_read, shell_write, syscon_read, syscon_write, log_cb
+    return read_cb, write_cb, log_cb
 
 
 # ---- Public entry --------------------------------------------------------
 
 @bridge
-def _call_hello_world(lib, ops_ptr, expected_version: int) -> int:
+def _call_hello_world(lib, ops_ptr,
+                      shell_base: int, syscon_base: int,
+                      expected_version: int) -> int:
     """Sync wrapper around the C entry point. The body runs in a bridge
     thread; any read/write callback inside the C code blocks here while the
     cocotb event loop services the AXI transaction, then we return.
     """
-    return int(lib.plover_hello_world(ops_ptr, ctypes.c_uint32(expected_version)))
+    return int(lib.plover_hello_world(
+        ops_ptr,
+        ctypes.c_uint32(shell_base),
+        ctypes.c_uint32(syscon_base),
+        ctypes.c_uint32(expected_version)))
 
 
-async def run_hello_world(shell: AxiLiteMaster, syscon: AxiLiteMaster,
+async def run_hello_world(host: AxiLiteMaster, *,
+                          shell_base: int,
+                          syscon_base: int,
                           expected_syscon_version: int,
                           include_dirs: list[Path] | None = None) -> int:
-    """Run the C++ hello-world test against the two AXI masters.
+    """Run the C hello-world test against the single AXI master.
 
-    ``include_dirs`` should be the list of FuseSoC build-dir paths that
-    contain the peakrdl-cpp generated headers (e.g. ``axil_shell_regs.hh``,
-    ``syscon_regs.hh``). The pytest harness collects these from the EDAM
-    manifest and passes them through.
+    ``shell_base`` / ``syscon_base`` are the page base addresses the xbar
+    uses at the top boundary. The C firmware combines these with the
+    register offsets it knows from the peakrdl-cheader headers.
     """
     lib = _load(include_dirs)
-    cb = _make_callbacks(shell, syscon)
-    shell_read, shell_write, syscon_read, syscon_write, log_cb = cb
+    read_cb, write_cb, log_cb = _make_callbacks(host)
 
     # Keep references alive — ctypes' callback wrappers are GC'd otherwise.
     ops = _HostOps(
-        shell_read   = _ReadFn(shell_read),
-        shell_write  = _WriteFn(shell_write),
-        syscon_read  = _ReadFn(syscon_read),
-        syscon_write = _WriteFn(syscon_write),
-        log          = _LogFn(log_cb),
+        read  = _ReadFn(read_cb),
+        write = _WriteFn(write_cb),
+        log   = _LogFn(log_cb),
     )
 
-    rc = await _call_hello_world(lib, ctypes.byref(ops), expected_syscon_version)
+    rc = await _call_hello_world(
+        lib, ctypes.byref(ops),
+        shell_base, syscon_base,
+        expected_syscon_version)
     return rc
