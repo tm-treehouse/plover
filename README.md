@@ -45,11 +45,21 @@ plover/                                project root
       counter.core
       rtl/counter.sv
       dv/<...same shape as axil_shell/dv/...>
+    syscon/                            system controller (RDL + version generator)
+      syscon.core
+      rtl/syscon.sv
+      rdl/syscon.rdl
+      rdl/gen_version.py
+      dv/<...same shape as axil_shell/dv/...>
+    stream_sink/                       AXI-Stream sink (verification stub)
+      stream_sink.core
+      rtl/stream_sink.sv
+      dv/<...same shape, no RDL...>
   top/                              project top — integrates the units above
-    plover.core                        FuseSoC core (depends on axil_shell + counter + syscon)
+    plover.core                        FuseSoC core (depends on all four unit cores)
     rtl/plover.sv                      top-level integration (structural wiring)
     dv/
-      test_plover.py                   cocotb entry: integration smoke test
+      test_plover.py                   cocotb entry: smoke, firmware_smoke, firmware_concurrent
       test_plover_pytest.py            pytest harness for the top
       firmware_bridge.py               ctypes loader + cocotb bridge for host/
     host/                              host-side C++ "firmware" that drives plover via AXI
@@ -269,34 +279,52 @@ its own integration testbench, and synthesis scaffolding.
 
 ```
 top/
-  plover.core      FuseSoC core (depends on ::axil_shell, ::counter, ::syscon)
-  rtl/plover.sv    structural top: instantiates axil_shell + counter + syscon
+  plover.core      FuseSoC core (depends on ::axil_shell, ::counter, ::syscon, ::stream_sink)
+  rtl/plover.sv    structural top: instantiates all four sub-units
   dv/              integration testbench (cocotb + pyuvm)
+  host/            host-side C++ firmware (see next section)
   syn/             synthesis scaffolding (vendor-agnostic — see syn/README.md)
 ```
 
-The top exposes two parallel AXI4-Lite slave ports (`s_axil_*` to
-`axil_shell`, `s_syscon_*` to `syscon`) plus a `count` debug output.
+The top exposes three external bus interfaces:
+
+* `s_axil_*` — AXI4-Lite slave routed to `axil_shell`
+* `s_syscon_*` — AXI4-Lite slave routed to `syscon`
+* `s_axis_*` — AXI4-Stream slave routed to `stream_sink` (TDATA[31:0],
+  TVALID, TREADY, TLAST). The sink absorbs every beat without
+  backpressure, counts beats into `sink_beat_count`, and folds TDATA
+  into a running XOR `sink_data_xor` — both exposed as top-level debug
+  outputs.
+
 `syscon`'s `soft_rst_n` is ANDed with the global `rst_n` to form the
 `counter`'s reset, so a software write to `SOFT_RST.CORE` on the syscon
-slave holds the counter in reset for the `syscon` pulse width while the
+slave holds the counter in reset for the syscon pulse width while the
 AXI endpoints stay alive.
 
 The integration testbench has narrow scope by design: it does not re-verify
 the sub-units (they have their own DV under `units/`) — it only checks that
-the integration is **wired and alive**. The current `smoke` test:
+the integration is **wired and alive**. Three pyuvm tests live here:
 
-1. Reads `axil_shell`'s constant ID register via `s_axil_*` and `syscon`'s
-   VERSION register via `s_syscon_*`, confirming both AXI paths thread
-   correctly through `plover.sv`.
-2. Samples `dut.count` across cycles to confirm the counter is clocked.
-3. Writes `1` to `syscon`'s `SOFT_RST.CORE`, then verifies the counter is
-   held at 0 mid-window and has restarted from 0 after the soft-reset
-   pulse ends — proving the `soft_rst_n` → counter wiring works.
+`smoke`
+: Reads `axil_shell`'s ID via `s_axil_*` and `syscon`'s VERSION via
+  `s_syscon_*` (both AXI paths). Samples `dut.count` across cycles
+  (counter is clocked). Writes `1` to `syscon`'s `SOFT_RST.CORE`,
+  verifies the counter is held at 0 mid-window and has restarted from
+  0 after the soft-reset pulse ends (soft_rst_n → counter wiring).
 
-Bug injection on the wiring (e.g. tying `counter_enable=0` or bypassing
-`soft_rst_n`) makes these checks fail loudly, so the connectivity has real
-teeth.
+`firmware_smoke`
+: Same setup, but the *test logic* runs in C++ from `top/host/` via the
+  ctypes bridge. See the "Host-side C++" section below.
+
+`firmware_concurrent`
+: cocotb pushes AXI-Stream stimulus into `stream_sink` in a background
+  coroutine while the C++ firmware does its register work. Both stimuli
+  sources are live simultaneously on independent buses; the test asserts
+  the C++ ran to success AND the sink received the expected pattern.
+
+Bug injection on any of the wired-up paths (e.g. tying `counter_enable=0`,
+bypassing `soft_rst_n`, truncating the AXIS stimulus, mis-stating an
+expected register value in the C++) makes the relevant check fail loudly.
 
 **Known limitation, intentionally left as scaffolding**: `axil_shell` does
 not currently expose its `CONTROL` register bits as ports, so the counter's
@@ -317,50 +345,82 @@ picked.
 through register reads and writes. The same source could later
 cross-compile and run on a real CPU mastering AXI on a board; only the
 read/write implementations change. Today it runs against the cocotb
-testbench: the C++ calls `host_ops.shell_read(addr)` / `syscon_read(addr)`
-etc., and those callbacks are wired (via cocotb 2.x's
-`cocotb.task.bridge` / `cocotb.task.resume`) to the same `AxiLiteMaster`
-instances the existing tests use.
+testbench, using cocotb 2.x's `cocotb.task.bridge` / `cocotb.task.resume`
+to wire the C++'s synchronous register accesses into the simulator's
+async event loop.
 
 ```
 top/host/
-  plover_hello.h    C ABI: host_ops callback struct + entry points
-  plover_hello.cc   the actual firmware test routines
+  plover_hello.h    C ABI: plover_host_ops callback struct + entry points
+  plover_hello.cc   firmware test routines (uses generated typed accessors)
   Makefile          builds libplover_hello.so
 ```
 
 The plumbing on the Python side lives in `top/dv/firmware_bridge.py`. It
-builds the `.so` on demand (rebuilds when sources are newer than the
-artifact), loads it via ctypes, and exposes `run_hello_world(shell,
-syscon, expected_version)` as an awaitable that runs the C++ test routine.
+builds the `.so` on demand, loads it via ctypes, and exposes
+`run_hello_world(shell, syscon, expected_version, include_dirs)` as an
+awaitable that runs the C++ test routine. `include_dirs` carries the
+FuseSoC build paths where peakrdl-cpp dropped the typed register headers
+(`axil_shell_regs.hh`, `syscon_regs.hh`) so the firmware compile picks
+them up.
 
-The current C++ test (`plover_hello_world`) reads `axil_shell`'s ID
-register and `syscon`'s VERSION through the host callbacks and checks both
-match. It exists to prove the round-trip works — C++ → Python → cocotb →
-Verilator → RTL → back. Bug-injection on the C++ side (e.g. wrong expected
-ID) makes the corresponding pytest test fail with a clean diagnostic, so
-the bridge has real test teeth.
+### Typed register access via auto-generated C++
 
-The cocotb entry that calls it is `firmware_smoke` in
-`top/dv/test_plover.py`, parametrized through `test_plover_pytest.py` and
-picked up automatically by `uv run pytest`. Runtime impact: about one
-extra second on top of the existing top tests, since the .so is small and
-the build is cached.
+The firmware does **not** hardcode register addresses. Each unit's
+`.rdl` is also fed through `peakrdl-cpp` (via the same FuseSoC
+generator that already emits the Python regmap + C header + HTML docs),
+producing a templated C++ class hierarchy per unit. The firmware looks like:
 
-Useful properties:
+```cpp
+// Each generated header owns a per-unit namespace so they can coexist
+// in one translation unit (peakrdl-cpp emits common scope-level helpers).
+axil_shell_regs::axil_shell<BusAdapter> shell(shell_bus, /*base=*/0);
+syscon_regs::syscon<BusAdapter>         syscon(syscon_bus, /*base=*/0);
+
+uint32_t id      = shell.ID.VALUE.read();    // typed field accessor
+uint32_t version = syscon.VERSION.read();    // typed register accessor
+```
+
+`BusAdapter` is a tiny wrapper around the `plover_host_ops` callback
+pair (`read_fn`, `write_fn`) that satisfies peakrdl-cpp's bus concept
+(`data_t read(addr_t)`, `void write(addr_t, data_t)`). Because the
+generated classes are templated on the bus type, the compiler inlines
+straight through to the C function pointers — no virtual dispatch.
+
+### Two tests live on this stack
+
+`firmware_smoke`
+: The minimum useful check: read the shell ID and the syscon VERSION
+  through the typed accessors and confirm both match. Proves the chain
+  C++ → Python → cocotb → Verilator → RTL → back works end-to-end.
+  Bug-injection on either expected value fails the test loudly.
+
+`firmware_concurrent`
+: cocotb's `AxiStreamSource` pushes a 16-beat pattern into the
+  `stream_sink` unit via `s_axis_*` on a background coroutine
+  (`cocotb.start_soon`) while the C++ firmware reads its registers on
+  the AXI-Lite paths. After both finish, the test asserts the C++ ran
+  to success AND the sink's `beat_count` matches the expected pattern
+  length with the expected XOR — proving the two stimuli sources were
+  live at the same simulated time on independent buses. The test
+  includes a probe assertion that some beats land *before* the
+  firmware returns; if AXIS was somehow being serialized after the C++
+  rather than running in parallel, that assertion catches it.
+
+### Useful properties
 
 * **No new build system at the top level.** The shared object is rebuilt
-  on-demand by the pytest harness via `top/host/Makefile`, so adding new
-  firmware files is just editing the Makefile's `SRCS` list — pytest picks
-  up the new code automatically.
+  on every run by the pytest harness via `top/host/Makefile`. Adding new
+  firmware files is editing the Makefile's `SRCS` list; pytest picks up
+  the new code automatically.
 
 * **Portable C++17.** Nothing platform-specific in the source. The C ABI
-  surface (`plover_host_ops`, function pointers) is what makes this
-  ctypes-loadable without help.
+  surface (`plover_host_ops`, function pointers) makes this
+  ctypes-loadable without a binding-generator layer.
 
 * **Real firmware-style code.** The C++ has no idea what an AXI handshake
   looks like; it sees register reads and writes. The same routine could
-  run on a real chip with `mmap`'d MMIO regions instead of host_ops
+  run on a real chip with `mmap`'d MMIO regions instead of `host_ops`
   callbacks.
 
 ## How the flow fits together

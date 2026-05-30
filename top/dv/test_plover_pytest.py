@@ -30,7 +30,7 @@ from cocotb_tools.runner import get_runner
 
 CORE_NAME = "plover"
 TEST_MODULE = "test_plover"
-TESTCASES = ["smoke", "firmware_smoke"]
+TESTCASES = ["smoke", "firmware_smoke", "firmware_concurrent"]
 RESOLVE_TARGET = "lint"
 
 HERE = Path(__file__).resolve().parent          # top/dv
@@ -86,17 +86,28 @@ def _sources_from_edam(edam: dict, eda_dir: Path) -> tuple[list[Path], str, list
     Generated include files (``is_include_file: true``) live only in the
     build dir — they have no live source — so we resolve them to absolute
     paths in the build dir and return their directories for ``-I`` use.
+
+    Returns four-tuple: (sources, toplevel, hdl_include_dirs, cpp_include_dirs).
+    HDL include dirs go to Verilator; cpp ones (peakrdl-cpp ``.hh`` output)
+    go to the firmware compile via PLOVER_RDL_INCLUDE_DIRS.
     """
     hdl_types = {"verilogSource", "systemVerilogSource"}
+    cpp_types = {"cSource", "cppSource"}
     sources: list[Path] = []
-    include_dirs: set[Path] = set()
+    hdl_include_dirs: set[Path] = set()
+    cpp_include_dirs: set[Path] = set()
 
     for f in edam.get("files", []):
-        if f.get("file_type") not in hdl_types:
-            continue
+        ftype = f.get("file_type")
         name = f["name"]
+        if ftype in cpp_types and f.get("is_include_file"):
+            # peakrdl-cpp generated headers — for the firmware compile only.
+            cpp_include_dirs.add((eda_dir / name).parent.resolve())
+            continue
+        if ftype not in hdl_types:
+            continue
         if f.get("is_include_file"):
-            include_dirs.add((eda_dir / name).parent.resolve())
+            hdl_include_dirs.add((eda_dir / name).parent.resolve())
             continue
         parts = Path(name).parts
         if "rtl" not in parts:
@@ -111,16 +122,17 @@ def _sources_from_edam(edam: dict, eda_dir: Path) -> tuple[list[Path], str, list
     toplevel = edam.get("toplevel", CORE_NAME)
     if isinstance(toplevel, list):
         toplevel = toplevel[0]
-    return sources, toplevel, sorted(include_dirs)
+    return sources, toplevel, sorted(hdl_include_dirs), sorted(cpp_include_dirs)
 
 
 @pytest.fixture(scope="module")
 def design():
     edam, eda_dir = _fusesoc_edam()
-    sources, toplevel, include_dirs = _sources_from_edam(edam, eda_dir)
+    sources, toplevel, hdl_includes, cpp_includes = _sources_from_edam(edam, eda_dir)
     assert sources, f"no HDL sources resolved from FuseSoC EDAM for {CORE_NAME}"
     return {"sources": sources, "toplevel": toplevel,
-            "include_dirs": include_dirs}
+            "hdl_include_dirs": hdl_includes,
+            "cpp_include_dirs": cpp_includes}
 
 
 def _run(design, cocotb_testcase: str) -> None:
@@ -129,7 +141,7 @@ def _run(design, cocotb_testcase: str) -> None:
         _resolve_verilator_root()
     waves = os.getenv("WAVES", "0") not in ("0", "", "false", "False")
 
-    extra_build = [f"-I{d}" for d in design["include_dirs"]]
+    extra_build = [f"-I{d}" for d in design["hdl_include_dirs"]]
 
     runner = get_runner(sim)
     runner.build(
@@ -149,7 +161,14 @@ def _run(design, cocotb_testcase: str) -> None:
         test_dir=str(HERE),
         testcase=cocotb_testcase,
         waves=waves,
-        extra_env={"PYTHONPATH": f"{HERE}{os.pathsep}{os.environ.get('PYTHONPATH', '')}"},
+        extra_env={
+            "PYTHONPATH": f"{HERE}{os.pathsep}{os.environ.get('PYTHONPATH', '')}",
+            # The C++ firmware test (firmware_smoke) reads this to know
+            # where the peakrdl-cpp generated headers live for its .so
+            # build. os.pathsep-separated so the cocotb test can split it.
+            "PLOVER_RDL_INCLUDE_DIRS": os.pathsep.join(
+                str(d) for d in design["cpp_include_dirs"]),
+        },
     )
 
 

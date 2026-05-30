@@ -87,8 +87,16 @@ module plover #(
     output wire                       s_syscon_rvalid,
     input  wire                       s_syscon_rready,
 
-    // ---- Observable counter output (debug / status) ---------------------
-    output wire [COUNTER_WIDTH-1:0]   count
+    // ---- External AXI4-Stream input to stream_sink ----------------------
+    input  wire [31:0]                s_axis_tdata,
+    input  wire                       s_axis_tvalid,
+    output wire                       s_axis_tready,
+    input  wire                       s_axis_tlast,
+
+    // ---- Observable outputs (debug / status) ----------------------------
+    output wire [COUNTER_WIDTH-1:0]   count,
+    output wire [31:0]                sink_beat_count,
+    output wire [31:0]                sink_data_xor
 );
 
     // axil_shell does not currently surface CONTROL on its port list, so the
@@ -166,6 +174,19 @@ module plover #(
         .clear  (counter_clear),
         .enable (counter_enable),
         .count  (count)
+    );
+
+    stream_sink #(
+        .WIDTH(32)
+    ) u_stream_sink (
+        .clk           (clk),
+        .rst_n         (rst_n),
+        .s_axis_tdata  (s_axis_tdata),
+        .s_axis_tvalid (s_axis_tvalid),
+        .s_axis_tready (s_axis_tready),
+        .s_axis_tlast  (s_axis_tlast),
+        .beat_count    (sink_beat_count),
+        .data_xor      (sink_data_xor)
     );
 
 endmodule

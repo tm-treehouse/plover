@@ -5,7 +5,7 @@ CAPI=2:
 # list (top integration + axil_shell + counter + syscon) into one design.
 
 name: ::plover:0.1.0
-description: Plover project top (integration of axil_shell + counter + syscon)
+description: Plover project top (integration of axil_shell + counter + syscon + stream_sink)
 
 filesets:
   rtl:
@@ -16,6 +16,7 @@ filesets:
       - ::axil_shell
       - ::counter
       - ::syscon
+      - ::stream_sink
 
 targets:
   default:

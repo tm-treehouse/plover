@@ -40,6 +40,44 @@ to follow semantic versioning.
   injection on the C++ side makes the test fail loudly, so it has real
   teeth. Build artifacts (`*.o`, `*.so`) are git-ignored and rebuilt
   on-demand by the pytest harness when sources are newer.
+- **Auto-generated C++ register-access layer from SystemRDL.** Added
+  `peakrdl-cpp>=0.3` to the dependencies and extended `tools/gen_regs.py`
+  and `tools/rdl_gen.py` to emit a typed C++ header (`<unit>_regs.hh`)
+  alongside the existing C header. Each generated header lives in its own
+  namespace (`axil_shell_regs::axil_shell<BusT>`, `syscon_regs::syscon<BusT>`)
+  because peakrdl-cpp emits common scope-level helpers; namespacing per
+  unit lets them coexist in one translation unit. The firmware
+  (`top/host/plover_hello.cc`) was rewritten from raw `host_ops` calls
+  to typed accessors: `shell.ID.VALUE.read()`, `syscon.VERSION.read()`.
+  A small `BusAdapter` class wraps the existing `plover_host_ops`
+  callback pair to satisfy peakrdl-cpp's bus concept, so the C++ runtime
+  path is unchanged — only the source-level expression of register access
+  is different. The pytest harness threads the FuseSoC-build generated-
+  header paths through the `PLOVER_RDL_INCLUDE_DIRS` env var into the
+  firmware compile, and the harness's EDAM scanner was extended to
+  separate HDL include dirs (for Verilator) from C/C++ include dirs (for
+  the firmware build).
+- **`units/stream_sink/` — AXI4-Stream sink (verification stub).** Pure
+  RTL block, no RDL, no software interface. AXI4-Stream slave with
+  TDATA[31:0]/TVALID/TREADY/TLAST, always-asserted TREADY (no
+  backpressure), counts accepted beats into `beat_count` and XORs TDATA
+  into `data_xor`. Standalone DV uses cocotbext-axi's `AxiStreamSource`
+  to drive a known pattern and verify both outputs.
+- **stream_sink integrated into the project top.** `plover.sv` gains
+  an `s_axis_*` input port (TDATA/TVALID/TREADY/TLAST) wired straight
+  to the new sink, and two new debug output ports `sink_beat_count` /
+  `sink_data_xor` carrying the sink's running state.
+- **`firmware_concurrent` integration test.** A new pyuvm test
+  (`test_plover.py`) runs cocotb's AXI-Stream stimulus into the
+  `stream_sink` in a `cocotb.start_soon` background coroutine while the
+  C++ firmware does its register-access work on the AXI-Lite slaves.
+  After both finish, the test asserts the C++ ran to success AND the
+  sink received the expected 16-beat pattern with the expected XOR.
+  Includes a probe assertion that at least one beat landed *during*
+  the firmware execution (not strictly serialized after it); if AXIS
+  ever ends up running entirely after the C++, that assertion catches
+  the regression. Standalone characterization shows 3 beats land within
+  the first 5 cycles, so genuine bus-level parallelism is happening.
 
 ### Changed
 - **Layout reorganized to colocate RTL and DV per unit** under

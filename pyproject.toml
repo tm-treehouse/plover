@@ -23,6 +23,7 @@ dependencies = [
     "peakrdl>=1.5",
     "peakrdl-html>=2.12",
     "peakrdl-cheader>=1.1",
+    "peakrdl-cpp>=0.3",
     # The verification base library (OpenTitan dv_lib port). Distribution name is
     # pyuvm-dv-lib; the import package is dv_lib. Source pinned below.
     "pyuvm-dv-lib",

@@ -63,19 +63,27 @@ def main() -> None:
     if not c_header_basename:
         sys.exit("rdl_gen.py: 'c_header_basename' parameter required "
                  "(e.g. 'axil_shell_regs')")
+    # C++ header options. Defaults are usually fine.
+    cpp_header_basename = params.get("cpp_header_basename", c_header_basename)
+    cpp_namespace = params.get("cpp_namespace", "plover_regs")
+    cpp_class_name = params.get("cpp_class_name")  # None -> peakrdl picks addrmap name
     outdir = Path(params.get("docs_out", "gen")).resolve()
 
-    subprocess.run(
-        [sys.executable, str(gen_script),
-         "--rdl", str(rdl),
-         "--outdir", str(outdir),
-         "--regmap-out", str(regmap_out),
-         "--c-header-name", c_header_basename],
-        check=True,
-    )
+    cmd = [sys.executable, str(gen_script),
+           "--rdl", str(rdl),
+           "--outdir", str(outdir),
+           "--regmap-out", str(regmap_out),
+           "--c-header-name", c_header_basename,
+           "--cpp-header-name", cpp_header_basename,
+           "--cpp-namespace", cpp_namespace]
+    if cpp_class_name:
+        cmd += ["--cpp-class-name", cpp_class_name]
+    subprocess.run(cmd, check=True)
 
-    # Emit a core describing the generated C header (HTML docs aren't a
-    # synthesis/sim input, so they're not listed here).
+    # Emit a core describing the generated C and C++ headers. (HTML docs
+    # aren't a synthesis/sim input, so they're not listed here.) Both headers
+    # are tagged as include files so FuseSoC's source-resolution picks up
+    # their containing directory for -I purposes.
     core = {
         "name": vlnv,
         "filesets": {
@@ -83,6 +91,10 @@ def main() -> None:
                 "files": [
                     {f"{outdir.name}/{c_header_basename}.h": {
                         "file_type": "cSource",
+                        "is_include_file": True,
+                    }},
+                    {f"{outdir.name}/{cpp_header_basename}.hh": {
+                        "file_type": "cppSource",
                         "is_include_file": True,
                     }},
                 ],

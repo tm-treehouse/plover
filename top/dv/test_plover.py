@@ -29,6 +29,7 @@ from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge
 
 from cocotbext.axi import AxiLiteBus, AxiLiteMaster
+from cocotbext.axi import AxiStreamBus, AxiStreamSource
 
 from pyuvm import uvm_test
 
@@ -57,6 +58,10 @@ async def _start_clock_and_reset(dut) -> None:
                     f"{prefix}_arvalid", f"{prefix}_rready"):
             if hasattr(dut, sig):
                 getattr(dut, sig).value = 0
+    # Idle AXI-Stream input.
+    for sig in ("s_axis_tvalid", "s_axis_tlast", "s_axis_tdata"):
+        if hasattr(dut, sig):
+            getattr(dut, sig).value = 0
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 5)
     await FallingEdge(dut.clk)
@@ -169,11 +174,139 @@ class firmware_smoke(uvm_test):
             shell  = _make_master(dut, "s_axil")
             syscon = _make_master(dut, "s_syscon")
 
+            # The harness sets PLOVER_RDL_INCLUDE_DIRS to the FuseSoC build
+            # paths where peakrdl-cpp dropped axil_shell_regs.hh and
+            # syscon_regs.hh. firmware_bridge passes these to the .so build.
+            import os
+            from pathlib import Path
+            raw = os.environ.get("PLOVER_RDL_INCLUDE_DIRS", "")
+            include_dirs = [Path(p) for p in raw.split(os.pathsep) if p]
+
             rc = await run_hello_world(
                 shell, syscon,
                 expected_syscon_version=EXPECTED_SYSCON_VERSION,
+                include_dirs=include_dirs,
             )
             assert rc == 0, f"plover_hello_world returned {rc} (non-zero = check failed)"
             self.logger.info("C++ firmware hello-world completed successfully")
+        finally:
+            self.drop_objection()
+
+
+@pyuvm.test()
+class firmware_concurrent(uvm_test):
+    """Run cocotb AXI-Stream stimulus AND the C++ firmware at the same time.
+
+    Demonstrates the two layers of the testbench acting in parallel on
+    different bus interfaces of the DUT:
+
+      * cocotb's AxiStreamSource pushes N beats into the stream_sink via
+        s_axis_*, started with cocotb.start_soon so it runs concurrently
+        with whatever follows.
+      * The C++ firmware does its register-access work on the AXI-Lite
+        slaves via the bridge — completely independent of the stream side.
+
+    Concurrency check at the end:
+      * C++ returned 0 (firmware OK).
+      * The sink received exactly the N beats we sent, with the expected
+        XOR of their data values.
+
+    The AXIS stimulus pushes its beats with no delay between them, so it
+    should typically complete *before* the C++ does all its register
+    operations (those go through cocotbext-axi's serialized handshake on
+    AXI-Lite). The point isn't strict overlap of the last cycles; it's
+    that both stimuli sources were live in the same simulator run and
+    targeted independent buses without the test orchestrating their
+    interleaving.
+    """
+
+    async def run_phase(self) -> None:
+        self.raise_objection()
+        try:
+            dut = cocotb.top
+            await _start_clock_and_reset(dut)
+
+            shell  = _make_master(dut, "s_axil")
+            syscon = _make_master(dut, "s_syscon")
+            axis_src = AxiStreamSource(
+                AxiStreamBus.from_prefix(dut, "s_axis"),
+                dut.clk, dut.rst_n, reset_active_level=False,
+            )
+
+            # The AXIS pattern that runs in parallel with the firmware.
+            stream_pattern = [
+                0x00000001, 0x00000002, 0x00000004, 0x00000008,
+                0xDEADBEEF, 0x12345678, 0xA5A5A5A5, 0x5A5A5A5A,
+                0xC0FFEE00, 0xBADC0DE1, 0xFEEDFACE, 0xDEADC0DE,
+                0x11111111, 0x22222222, 0x33333333, 0x44444444,
+            ]
+            expected_beats = len(stream_pattern)
+            expected_xor = 0
+            for w in stream_pattern:
+                expected_xor ^= w
+
+            byte_lanes = len(dut.s_axis_tdata) // 8
+
+            async def push_stream() -> None:
+                """Background coroutine: push every beat with no inter-beat gap."""
+                for w in stream_pattern:
+                    await axis_src.send(w.to_bytes(byte_lanes, "little"))
+                await axis_src.wait()
+
+            # Kick off the stream stimulus and IMMEDIATELY proceed to the
+            # C++ firmware. cocotb.start_soon schedules push_stream as a
+            # concurrent task; we don't await it yet.
+            stream_task = cocotb.start_soon(push_stream())
+
+            # The harness sets PLOVER_RDL_INCLUDE_DIRS to the FuseSoC build
+            # paths where peakrdl-cpp dropped axil_shell_regs.hh and
+            # syscon_regs.hh. firmware_bridge passes these to the .so build.
+            import os
+            from pathlib import Path
+            raw = os.environ.get("PLOVER_RDL_INCLUDE_DIRS", "")
+            include_dirs = [Path(p) for p in raw.split(os.pathsep) if p]
+
+            rc = await run_hello_world(
+                shell, syscon,
+                expected_syscon_version=EXPECTED_SYSCON_VERSION,
+                include_dirs=include_dirs,
+            )
+            assert rc == 0, f"plover_hello_world returned {rc} (non-zero = check failed)"
+
+            # Concurrency check: when the C++ firmware returns, AXIS should
+            # already have made progress in the sink. If beat_count is still
+            # 0 here, the AXIS stimulus was somehow serialized after the C++
+            # rather than running in parallel — a regression we want to
+            # catch. Standalone characterization shows >3 beats land within
+            # 5 cycles of t=0, so a non-zero count post-firmware is a
+            # reasonable threshold.
+            mid_run_beats = int(dut.sink_beat_count.value)
+            assert mid_run_beats > 0, (
+                f"expected AXIS to have pushed beats during the C++ "
+                f"firmware execution, but sink_beat_count = {mid_run_beats}")
+            self.logger.info(
+                f"during-firmware probe: sink_beat_count = {mid_run_beats} "
+                f"(confirms AXIS ran concurrently with C++)")
+
+            # Wait for the AXIS stimulus to drain (it almost certainly
+            # already has, since AXIS pushes faster than serialized AXI-Lite).
+            await stream_task
+            # Give the sink a couple of cycles for the last beat to commit
+            # before we sample its outputs.
+            await ClockCycles(dut.clk, 3)
+
+            beat_count = int(dut.sink_beat_count.value)
+            data_xor   = int(dut.sink_data_xor.value)
+            self.logger.info(
+                f"sink final state: beat_count={beat_count} "
+                f"data_xor=0x{data_xor:08x}")
+            assert beat_count == expected_beats, (
+                f"AXIS beat_count: got {beat_count}, expected {expected_beats}")
+            assert data_xor == expected_xor, (
+                f"AXIS data_xor: got 0x{data_xor:08x}, "
+                f"expected 0x{expected_xor:08x}")
+            self.logger.info(
+                "concurrent test OK: C++ firmware completed AND AXIS sink "
+                "received the expected stimulus")
         finally:
             self.drop_objection()

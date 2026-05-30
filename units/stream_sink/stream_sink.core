@@ -1,0 +1,37 @@
+CAPI=2:
+# FuseSoC core for the stream_sink unit. Pure RTL — no RDL, no generator.
+
+name: ::stream_sink:0.1.0
+description: AXI4-Stream sink that counts beats and XORs data (verification stub)
+
+filesets:
+  rtl:
+    files:
+      - rtl/stream_sink.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+      - rtl
+    toplevel: stream_sink
+
+  lint:
+    default_tool: verilator
+    filesets:
+      - rtl
+    toplevel: stream_sink
+    tools:
+      verilator:
+        mode: lint-only
+        verilator_options:
+          - -Wall
+          - -Wno-DECLFILENAME
+          - -Wno-UNUSEDSIGNAL
+
+parameters:
+  WIDTH:
+    datatype: int
+    description: AXI-Stream TDATA width in bits
+    paramtype: vlogparam
+    default: 32

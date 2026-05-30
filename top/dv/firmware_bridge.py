@@ -61,22 +61,31 @@ class _HostOps(ctypes.Structure):
 
 # ---- Library load + build-on-demand --------------------------------------
 
-def _ensure_built() -> Path:
-    """Build the .so if missing or older than its sources. Returns the path."""
-    srcs = [HOST_DIR / "plover_hello.cc", HOST_DIR / "plover_hello.h",
-            HOST_DIR / "Makefile"]
-    needs_build = not LIB_PATH.exists() or any(
-        s.stat().st_mtime > LIB_PATH.stat().st_mtime
-        for s in srcs if s.exists()
-    )
-    if needs_build:
-        _log.info(f"building {LIB_PATH.name} (sources newer than artifact)")
-        subprocess.run(["make", "-C", str(HOST_DIR)], check=True)
+def _ensure_built(include_dirs: list[Path] | None = None) -> Path:
+    """Build the .so. Returns the path.
+
+    Unconditional rebuild: this is the path through which the FuseSoC-built
+    generated headers (axil_shell_regs.hh, syscon_regs.hh) reach the C++
+    compile, and those headers live under different build-dir paths each
+    time the harness runs. Skipping the rebuild based purely on source
+    mtimes would silently reuse a .so compiled against stale headers when
+    the build dir changes. The compile takes <1s so always rebuilding is
+    the honest move.
+    """
+    env = os.environ.copy()
+    if include_dirs:
+        env["EXTRA_INCLUDES"] = " ".join(f"-I{d}" for d in include_dirs)
+    _log.info(f"building {LIB_PATH.name} "
+              f"(includes: {env.get('EXTRA_INCLUDES', 'none')})")
+    # Force rebuild from clean to ensure the new include paths are used.
+    subprocess.run(["make", "-C", str(HOST_DIR), "clean"], check=True,
+                   stdout=subprocess.DEVNULL)
+    subprocess.run(["make", "-C", str(HOST_DIR)], check=True, env=env)
     return LIB_PATH
 
 
-def _load() -> ctypes.CDLL:
-    lib = ctypes.CDLL(str(_ensure_built()))
+def _load(include_dirs: list[Path] | None = None) -> ctypes.CDLL:
+    lib = ctypes.CDLL(str(_ensure_built(include_dirs)))
     lib.plover_hello_world.argtypes = [ctypes.POINTER(_HostOps), ctypes.c_uint32]
     lib.plover_hello_world.restype = ctypes.c_int
     return lib
@@ -135,9 +144,16 @@ def _call_hello_world(lib, ops_ptr, expected_version: int) -> int:
 
 
 async def run_hello_world(shell: AxiLiteMaster, syscon: AxiLiteMaster,
-                          expected_syscon_version: int) -> int:
-    """Run the C++ hello-world test against the two AXI masters."""
-    lib = _load()
+                          expected_syscon_version: int,
+                          include_dirs: list[Path] | None = None) -> int:
+    """Run the C++ hello-world test against the two AXI masters.
+
+    ``include_dirs`` should be the list of FuseSoC build-dir paths that
+    contain the peakrdl-cpp generated headers (e.g. ``axil_shell_regs.hh``,
+    ``syscon_regs.hh``). The pytest harness collects these from the EDAM
+    manifest and passes them through.
+    """
+    lib = _load(include_dirs)
     cb = _make_callbacks(shell, syscon)
     shell_read, shell_write, syscon_read, syscon_write, log_cb = cb
 
