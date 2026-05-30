@@ -75,8 +75,6 @@ generate:
     parameters:
       rdl_file: rdl/axil_shell.rdl
       c_header_basename: axil_shell_regs
-      cpp_namespace: axil_shell_regs
-      cpp_class_name: axil_shell
 
 parameters:
   ADDR_WIDTH:

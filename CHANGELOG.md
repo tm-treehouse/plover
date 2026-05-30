@@ -27,36 +27,31 @@ to follow semantic versioning.
 - README section documenting the project-wide **32-bit register-width
   decision** and a roadmap for migrating selected registers (or the whole
   interface) to 64-bit if a future need arises.
-- **`top/host/` — host-side C++ "firmware" subtree.** Plain C ABI
+- **`top/host/` — host-side C "firmware" subtree.** Plain C ABI
   (`plover_host_ops` callback struct + `plover_hello_world` entry point)
   built as `libplover_hello.so` via `top/host/Makefile`. The Python side
   (`top/dv/firmware_bridge.py`) loads the .so via ctypes and wraps the
   cocotb `AxiLiteMaster` instances in callbacks using cocotb 2.x's
-  `cocotb.task.bridge` / `cocotb.task.resume`, so C++ register accesses
+  `cocotb.task.bridge` / `cocotb.task.resume`, so C register accesses
   block the bridge thread while the cocotb event loop services one bus
   transaction at a time. A new pyuvm test (`firmware_smoke` in
-  `test_plover.py`) calls into the C++ from cocotb, proving the round-trip
-  (C++ → Python → cocotb → Verilator → RTL → back) works end-to-end. Bug
-  injection on the C++ side makes the test fail loudly, so it has real
+  `test_plover.py`) calls into the C from cocotb, proving the round-trip
+  (C → Python → cocotb → Verilator → RTL → back) works end-to-end. Bug
+  injection on the C side makes the test fail loudly, so it has real
   teeth. Build artifacts (`*.o`, `*.so`) are git-ignored and rebuilt
   on-demand by the pytest harness when sources are newer.
-- **Auto-generated C++ register-access layer from SystemRDL.** Added
-  `peakrdl-cpp>=0.3` to the dependencies and extended `tools/gen_regs.py`
-  and `tools/rdl_gen.py` to emit a typed C++ header (`<unit>_regs.hh`)
-  alongside the existing C header. Each generated header lives in its own
-  namespace (`axil_shell_regs::axil_shell<BusT>`, `syscon_regs::syscon<BusT>`)
-  because peakrdl-cpp emits common scope-level helpers; namespacing per
-  unit lets them coexist in one translation unit. The firmware
-  (`top/host/plover_hello.cc`) was rewritten from raw `host_ops` calls
-  to typed accessors: `shell.ID.VALUE.read()`, `syscon.VERSION.read()`.
-  A small `BusAdapter` class wraps the existing `plover_host_ops`
-  callback pair to satisfy peakrdl-cpp's bus concept, so the C++ runtime
-  path is unchanged — only the source-level expression of register access
-  is different. The pytest harness threads the FuseSoC-build generated-
-  header paths through the `PLOVER_RDL_INCLUDE_DIRS` env var into the
-  firmware compile, and the harness's EDAM scanner was extended to
-  separate HDL include dirs (for Verilator) from C/C++ include dirs (for
-  the firmware build).
+- **Auto-generated C register-access layer from SystemRDL.** The
+  firmware reads registers via `offsetof()` on a packed struct generated
+  by `peakrdl-cheader` (one per RDL unit, e.g. `axil_shell_t`,
+  `syscon_t`), with bitfields extracted via the generator's `_bm` / `_bp`
+  macros. Two small helper macros in `top/host/plover_hello.c`
+  (`REG_OFFSET`, `FIELD_GET`) keep call sites readable. A
+  `_Static_assert` against the generator-emitted `_reset` value catches
+  drift between firmware constants and the RDL at compile time. The
+  pytest harness threads the FuseSoC-build generated-header paths
+  through the `PLOVER_RDL_INCLUDE_DIRS` env var into the firmware
+  compile, and the harness's EDAM scanner separates HDL include dirs
+  (for Verilator) from C include dirs (for the firmware build).
 - **`units/stream_sink/` — AXI4-Stream sink (verification stub).** Pure
   RTL block, no RDL, no software interface. AXI4-Stream slave with
   TDATA[31:0]/TVALID/TREADY/TLAST, always-asserted TREADY (no
@@ -70,12 +65,12 @@ to follow semantic versioning.
 - **`firmware_concurrent` integration test.** A new pyuvm test
   (`test_plover.py`) runs cocotb's AXI-Stream stimulus into the
   `stream_sink` in a `cocotb.start_soon` background coroutine while the
-  C++ firmware does its register-access work on the AXI-Lite slaves.
-  After both finish, the test asserts the C++ ran to success AND the
+  C firmware does its register-access work on the AXI-Lite slaves.
+  After both finish, the test asserts the C ran to success AND the
   sink received the expected 16-beat pattern with the expected XOR.
   Includes a probe assertion that at least one beat landed *during*
   the firmware execution (not strictly serialized after it); if AXIS
-  ever ends up running entirely after the C++, that assertion catches
+  ever ends up running entirely after the C, that assertion catches
   the regression. Standalone characterization shows 3 beats land within
   the first 5 cycles, so genuine bus-level parallelism is happening.
 

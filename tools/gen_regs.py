@@ -136,23 +136,14 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Generate register artifacts from RDL")
     ap.add_argument("--rdl", required=True, type=Path)
     ap.add_argument("--outdir", default="gen", type=Path,
-                    help="output dir for docs + C header + C++ header")
+                    help="output dir for docs + C header")
     ap.add_argument("--regmap-out", default="dv/regmap.py", type=Path,
                     help="path for the generated Python regmap consumed by the TB")
     ap.add_argument("--c-header-name", default=None,
                     help="basename (without .h) for the C header; "
                          "defaults to '<addrmap>_regs'")
-    ap.add_argument("--cpp-header-name", default=None,
-                    help="basename (without .hh) for the C++ header; "
-                         "defaults to '<addrmap>_regs'")
-    ap.add_argument("--cpp-namespace", default=None,
-                    help="namespace for the C++ header (uses underscores, not "
-                         "::, per peakrdl-cpp). Defaults to 'plover_regs'.")
-    ap.add_argument("--cpp-class-name", default=None,
-                    help="top-level class name for the C++ header; "
-                         "defaults to the RDL addrmap name.")
     ap.add_argument("--no-docs", action="store_true",
-                    help="skip HTML + C header + C++ header (only emit regmap.py)")
+                    help="skip HTML + C header (only emit regmap.py)")
     args = ap.parse_args()
 
     rdl = args.rdl.resolve()
@@ -164,17 +155,9 @@ def main() -> None:
         # Default C-header basename derives from the RDL filename so the
         # output is predictable per unit (e.g. syscon.rdl -> syscon_regs.h).
         c_basename = args.c_header_name or f"{rdl.stem}_regs"
-        cpp_basename = args.cpp_header_name or f"{rdl.stem}_regs"
-        cpp_namespace = args.cpp_namespace or "plover_regs"
         run_peakrdl(["html", str(rdl), "-o", str(outdir / "html")], "HTML docs")
         run_peakrdl(["c-header", str(rdl), "-o", str(outdir / f"{c_basename}.h")],
                     "C header")
-        cpp_args = ["cpp", str(rdl),
-                    "-o", str(outdir / f"{cpp_basename}.hh"),
-                    "--namespace", cpp_namespace]
-        if args.cpp_class_name:
-            cpp_args += ["--class-name", args.cpp_class_name]
-        run_peakrdl(cpp_args, "C++ header")
 
 
 if __name__ == "__main__":

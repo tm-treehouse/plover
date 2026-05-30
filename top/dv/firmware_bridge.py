@@ -1,16 +1,16 @@
 """
-Loader + cocotb bridge for the C++ host-side firmware library.
+Loader + cocotb bridge for the C host-side firmware library.
 
-The C++ code in ``top/host/`` exposes test routines that operate on the chip
+The C code in ``top/host/`` exposes test routines that operate on the chip
 through callbacks (read/write a 32-bit register on either AXI slave). This
 module:
 
 * Builds and loads ``libplover_hello.so`` via ctypes.
-* Wraps two cocotb ``AxiLiteMaster`` instances (shell + syscon) in C callable
+* Wraps two cocotb ``AxiLiteMaster`` instances (shell + syscon) in C-callable
   callbacks using cocotb 2.x's :func:`cocotb.task.bridge` /
-  :func:`cocotb.task.resume`. The C++ thread blocks on each callback while
+  :func:`cocotb.task.resume`. The C thread blocks on each callback while
   the cocotb event loop advances the simulation by exactly one bus
-  transaction, then returns the result to C++.
+  transaction, then returns the result to C.
 * Exposes :func:`run_hello_world` which the test calls with ``await``.
 
 Why this looks the way it does
@@ -20,7 +20,7 @@ The C side is synchronous; cocotb is async. The bridge between them is
 ``cocotb.task.bridge`` (wraps a sync function so it's awaitable, runs it in a
 thread) and ``cocotb.task.resume`` (lets that sync function call back into
 async cocotb code, blocking until the cocotb coroutine completes). Without
-this dance, C++ calling Python which calls ``master.read()`` would either
+this dance, C calling Python which calls ``master.read()`` would either
 deadlock or run the simulator and the test in parallel — neither is OK.
 """
 from __future__ import annotations

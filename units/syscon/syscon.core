@@ -69,8 +69,6 @@ generate:
       rdl_file: rdl/syscon.rdl
       regmap_out: dv/regmap.py
       c_header_basename: syscon_regs
-      cpp_namespace: syscon_regs
-      cpp_class_name: syscon
   version_header:
     generator: version_gen
     parameters:
