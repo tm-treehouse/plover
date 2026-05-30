@@ -1,21 +1,25 @@
 """
 cocotb entry point for the plover project-top integration testbench.
 
-Scope is deliberately narrow: this is not a re-verification of axil_shell or
-counter (those have their own unit testbenches under ``units/``). It checks
-that the integration is wired and alive:
+Scope is integration-level, not re-verification of the sub-units. The smoke
+test exercises three things, in order:
 
-* AXI4-Lite transactions issued at the top boundary reach the shell
-  through ``plover.sv``'s hierarchy. We confirm by reading the shell's
-  constant ID register (0x0C = 0xC0C07B01).
-* The counter sub-unit, instantiated inside plover, is actually running.
-  We confirm by sampling ``dut.count`` across a few cycles and watching it
-  advance.
+1. **Two AXI paths.** Both AXI4-Lite slave ports are alive: read the
+   axil_shell ID register (0x0C = 0xC0C07B01) via s_axil_*, and read the
+   syscon VERSION register via s_syscon_* (parameter override sets it to
+   a known value).
 
-Follow-up (noted in plover.sv): once the shell exposes its CONTROL bits as
-ports, the counter's ``enable``/``clear`` will be sourced from
-``CONTROL.ENABLE`` / a CONTROL spare bit, and this testbench grows a check
-of the form "write CONTROL.ENABLE=0, confirm count freezes."
+2. **The counter is wired and clocked.** Sample ``dut.count`` across
+   several cycles and confirm it advances by the cycle count.
+
+3. **Soft-reset gates the counter.** Write 1 to syscon's SOFT_RST.CORE
+   (offset 0x08) over the syscon slave; syscon pulses soft_rst_n low for
+   8 cycles, which holds the counter in reset. After that window passes
+   the counter resumes from 0 and we confirm it.
+
+If you regress the soft_rst_n wiring (e.g. tie it high in plover.sv), the
+third check fails: the counter keeps counting through the soft-reset
+window instead of snapping to 0.
 """
 from __future__ import annotations
 
@@ -30,28 +34,37 @@ from pyuvm import uvm_test
 
 
 CLK_PERIOD_NS = 10
-AXIL_PREFIX = "s_axil"
-ID_OFFSET = 0x0C
-ID_EXPECTED = 0xC0C07B01
+
+# axil_shell ID register
+SHELL_ID_OFFSET   = 0x0C
+SHELL_ID_EXPECTED = 0xC0C07B01
+
+# syscon VERSION (0x00), SOFT_RST (0x08). Override values match the
+# parameters: dict in test_plover_pytest.py.
+SYSCON_VERSION_OFFSET    = 0x00
+SYSCON_SOFT_RST_OFFSET   = 0x08
+EXPECTED_SYSCON_VERSION  = 0xCAFE_F00D
+SYSCON_SOFT_RST_CYCLES   = 8       # syscon default; matches u_syscon.SOFT_RST_CYCLES
 
 
-async def _setup(dut) -> AxiLiteMaster:
-    """Start the clock, apply reset, return a configured AXI-Lite master."""
+async def _start_clock_and_reset(dut) -> None:
     cocotb.start_soon(Clock(dut.clk, CLK_PERIOD_NS, unit="ns").start())
-
-    # Idle master-driven inputs through reset.
-    for sig in ("s_axil_awvalid", "s_axil_wvalid", "s_axil_bready",
-                "s_axil_arvalid", "s_axil_rready"):
-        if hasattr(dut, sig):
-            getattr(dut, sig).value = 0
+    # Idle every master-driven AXI input on both slaves through reset.
+    for prefix in ("s_axil", "s_syscon"):
+        for sig in (f"{prefix}_awvalid", f"{prefix}_wvalid", f"{prefix}_bready",
+                    f"{prefix}_arvalid", f"{prefix}_rready"):
+            if hasattr(dut, sig):
+                getattr(dut, sig).value = 0
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 5)
     await FallingEdge(dut.clk)
     dut.rst_n.value = 1
     await ClockCycles(dut.clk, 2)
 
+
+def _make_master(dut, prefix: str) -> AxiLiteMaster:
     return AxiLiteMaster(
-        AxiLiteBus.from_prefix(dut, AXIL_PREFIX),
+        AxiLiteBus.from_prefix(dut, prefix),
         dut.clk,
         dut.rst_n,
         reset_active_level=False,
@@ -60,38 +73,69 @@ async def _setup(dut) -> AxiLiteMaster:
 
 @pyuvm.test()
 class smoke(uvm_test):
-    """Integration smoke: AXI path reaches the shell, and the counter runs."""
+    """Integration smoke: two AXI paths, counter wiring, soft-reset gating."""
 
     async def run_phase(self) -> None:
         self.raise_objection()
         try:
             dut = cocotb.top
-            master = await _setup(dut)
+            await _start_clock_and_reset(dut)
 
-            # ---- 1) AXI path through the hierarchy --------------------
-            # Reading the shell's constant ID register exercises the entire
-            # axil_shell -> plover boundary; if anything in the wiring is
-            # wrong, this read will mismatch or hang.
-            resp = await master.read(ID_OFFSET, 4)
+            shell  = _make_master(dut, "s_axil")
+            syscon = _make_master(dut, "s_syscon")
+
+            # ---- 1) Both AXI paths reach their slaves --------------------
+            resp = await shell.read(SHELL_ID_OFFSET, 4)
             got = int.from_bytes(resp.data, "little")
-            assert got == ID_EXPECTED, (
-                f"ID register mismatch through plover top: "
-                f"got 0x{got:08x}, expected 0x{ID_EXPECTED:08x}")
+            assert got == SHELL_ID_EXPECTED, (
+                f"axil_shell ID register: got 0x{got:08x}, "
+                f"expected 0x{SHELL_ID_EXPECTED:08x}")
             self.logger.info(
-                f"AXI integration check: read ID=0x{got:08x} via plover top — OK")
+                f"axil_shell path OK: ID=0x{got:08x} via s_axil_*")
 
-            # ---- 2) Counter is wired in and advancing -----------------
-            # With the current placeholder wiring (counter_enable=1,
-            # counter_clear=0 in plover.sv) the counter should be free-running.
+            resp = await syscon.read(SYSCON_VERSION_OFFSET, 4)
+            got = int.from_bytes(resp.data, "little")
+            assert got == EXPECTED_SYSCON_VERSION, (
+                f"syscon VERSION register: got 0x{got:08x}, "
+                f"expected 0x{EXPECTED_SYSCON_VERSION:08x}")
+            self.logger.info(
+                f"syscon path OK: VERSION=0x{got:08x} via s_syscon_*")
+
+            # ---- 2) Counter is wired in and advancing --------------------
             await RisingEdge(dut.clk)
             start = int(dut.count.value)
             await ClockCycles(dut.clk, 10)
             end = int(dut.count.value)
-            advanced = (end - start) & ((1 << len(dut.count)) - 1)
+            mask = (1 << len(dut.count)) - 1
+            advanced = (end - start) & mask
             assert advanced == 10, (
-                f"Counter wiring check: expected count to advance by 10 over "
-                f"10 cycles, got {advanced} (start=0x{start:x} end=0x{end:x})")
+                f"counter advance: expected 10 cycles, got {advanced} "
+                f"(start=0x{start:x} end=0x{end:x})")
+            self.logger.info(f"counter free-running OK: advanced {advanced}")
+
+            # ---- 3) Soft-reset via syscon gates the counter --------------
+            # Write 1 to SOFT_RST.CORE. syscon pulses soft_rst_n low for
+            # SOFT_RST_CYCLES cycles; that holds the counter in reset and
+            # zeros its output. After the window, the counter resumes from 0.
+            await syscon.write(
+                SYSCON_SOFT_RST_OFFSET, (1).to_bytes(4, "little"))
+            # The write completes, then the pulse takes effect one cycle
+            # later, then the counter is held for SOFT_RST_CYCLES. Sample
+            # mid-window to confirm the counter is being held at 0.
+            await ClockCycles(dut.clk, 3)
+            mid = int(dut.count.value)
+            assert mid == 0, (
+                f"soft-reset gating: expected counter held at 0 mid-window, "
+                f"got 0x{mid:x}")
+            # Wait past the soft-reset window plus a couple of cycles, then
+            # confirm the counter has started counting again from 0.
+            await ClockCycles(dut.clk, SYSCON_SOFT_RST_CYCLES + 2)
+            after = int(dut.count.value)
+            assert 1 <= after <= SYSCON_SOFT_RST_CYCLES + 4, (
+                f"soft-reset release: expected counter to be small and "
+                f"counting again after the reset window, got 0x{after:x}")
             self.logger.info(
-                f"Counter wiring check: advanced {advanced} over 10 cycles — OK")
+                f"soft-reset gating OK: counter held at 0, resumed to "
+                f"0x{after:x} after the window")
         finally:
             self.drop_objection()

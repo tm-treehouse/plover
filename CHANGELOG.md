@@ -14,6 +14,16 @@ to follow semantic versioning.
   (vendor-agnostic stubs).
 - `top/plover.core` — FuseSoC core depending on the unit cores, so a
   single resolve pulls in the full design.
+- **`syscon` integrated into the project top.** `plover.sv` gains a second
+  AXI-Lite slave port (`s_syscon_*`) routed to a `syscon` instance, and
+  `syscon.soft_rst_n` gates the `counter`'s reset so a software write to
+  `SOFT_RST.CORE` actually resets the counter while the AXI endpoints
+  stay alive. Top harness adds include-dir handling for syscon's
+  generated version header and passes deterministic `VERSION_OVERRIDE` /
+  `VERSION_HASH_OVERRIDE` parameters. The integration `smoke` test now
+  also reads syscon's VERSION via the second slave and exercises the
+  soft-reset → counter-cleared path; bug injection on the soft-reset
+  wiring fails it loudly.
 - README section documenting the project-wide **32-bit register-width
   decision** and a roadmap for migrating selected registers (or the whole
   interface) to 64-bit if a future need arises.

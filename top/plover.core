@@ -2,10 +2,10 @@ CAPI=2:
 # FuseSoC core for the project top.
 #
 # Depends on the unit cores under units/ so FuseSoC resolves the full source
-# list (top integration + axil_shell + counter) into one design.
+# list (top integration + axil_shell + counter + syscon) into one design.
 
 name: ::plover:0.1.0
-description: Plover project top (integration of axil_shell + counter)
+description: Plover project top (integration of axil_shell + counter + syscon)
 
 filesets:
   rtl:
@@ -15,6 +15,7 @@ filesets:
     depend:
       - ::axil_shell
       - ::counter
+      - ::syscon
 
 targets:
   default:
@@ -50,3 +51,13 @@ parameters:
     description: Width of the embedded counter (bits)
     paramtype: vlogparam
     default: 8
+  VERSION_OVERRIDE:
+    datatype: int
+    description: Pass-through to syscon — override VERSION register (non-zero wins)
+    paramtype: vlogparam
+    default: 0
+  VERSION_HASH_OVERRIDE:
+    datatype: int
+    description: Pass-through to syscon — override VERSION_HASH register
+    paramtype: vlogparam
+    default: 0

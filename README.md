@@ -46,7 +46,7 @@ plover/                                project root
       rtl/counter.sv
       dv/<...same shape as axil_shell/dv/...>
   top/                              project top — integrates the units above
-    plover.core                        FuseSoC core (depends on axil_shell + counter)
+    plover.core                        FuseSoC core (depends on axil_shell + counter + syscon)
     rtl/plover.sv                      top-level integration (structural wiring)
     dv/
       test_plover.py                   cocotb entry: integration smoke test
@@ -264,24 +264,34 @@ its own integration testbench, and synthesis scaffolding.
 
 ```
 top/
-  plover.core      FuseSoC core (depends on ::axil_shell and ::counter)
-  rtl/plover.sv    structural top: instantiates axil_shell + counter
+  plover.core      FuseSoC core (depends on ::axil_shell, ::counter, ::syscon)
+  rtl/plover.sv    structural top: instantiates axil_shell + counter + syscon
   dv/              integration testbench (cocotb + pyuvm)
   syn/             synthesis scaffolding (vendor-agnostic — see syn/README.md)
 ```
+
+The top exposes two parallel AXI4-Lite slave ports (`s_axil_*` to
+`axil_shell`, `s_syscon_*` to `syscon`) plus a `count` debug output.
+`syscon`'s `soft_rst_n` is ANDed with the global `rst_n` to form the
+`counter`'s reset, so a software write to `SOFT_RST.CORE` on the syscon
+slave holds the counter in reset for the `syscon` pulse width while the
+AXI endpoints stay alive.
 
 The integration testbench has narrow scope by design: it does not re-verify
 the sub-units (they have their own DV under `units/`) — it only checks that
 the integration is **wired and alive**. The current `smoke` test:
 
-1. Issues an AXI4-Lite read at the top boundary for the shell's constant ID
-   register, proving the AXI path threads through `plover.sv` to
-   `axil_shell` correctly.
-2. Samples `dut.count` across cycles and confirms the counter is advancing,
-   proving the counter is instantiated and clocked.
+1. Reads `axil_shell`'s constant ID register via `s_axil_*` and `syscon`'s
+   VERSION register via `s_syscon_*`, confirming both AXI paths thread
+   correctly through `plover.sv`.
+2. Samples `dut.count` across cycles to confirm the counter is clocked.
+3. Writes `1` to `syscon`'s `SOFT_RST.CORE`, then verifies the counter is
+   held at 0 mid-window and has restarted from 0 after the soft-reset
+   pulse ends — proving the `soft_rst_n` → counter wiring works.
 
-A bug injected into the wiring (e.g. tying `counter_enable=0`) makes this
-test fail loudly, so the connectivity check has real teeth.
+Bug injection on the wiring (e.g. tying `counter_enable=0` or bypassing
+`soft_rst_n`) makes these checks fail loudly, so the connectivity has real
+teeth.
 
 **Known limitation, intentionally left as scaffolding**: `axil_shell` does
 not currently expose its `CONTROL` register bits as ports, so the counter's

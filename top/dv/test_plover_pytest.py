@@ -1,13 +1,21 @@
 """
 FuseSoC + pytest harness for the plover project-top testbench.
 
-The ``plover`` core depends on ``axil_shell`` and ``counter``, so FuseSoC's
-EDAM resolves the full source list (top integration + both sub-units) and
-the cocotb runner builds the whole hierarchy.
+The ``plover`` core depends on ``axil_shell``, ``counter``, and ``syscon``,
+so FuseSoC's EDAM resolves the full source list (top integration + all
+three sub-units) and the cocotb runner builds the whole hierarchy.
 
-Same shape as the unit harnesses under units/<unit>/dv/; the only knobs that
-differ are the core name, the test module, and the source-back-mapping
-(sources come from multiple unit dirs, not just one).
+Two non-trivial bits beyond the unit harnesses:
+
+1. **Generated include files.** ``syscon`` ships with a build-time generated
+   ``syscon_version_pkg.svh`` (via the version_gen FuseSoC generator). The
+   EDAM lists it as ``is_include_file: true``; we collect its containing
+   directory and pass ``-I<dir>`` to Verilator so the include resolves.
+
+2. **Version parameters.** We pass deterministic ``VERSION_OVERRIDE`` /
+   ``VERSION_HASH_OVERRIDE`` to the syscon instance at build so the test
+   has known values to compare against, regardless of git state. These
+   match the EXPECTED_* constants in ``test_plover.py``.
 """
 from __future__ import annotations
 
@@ -29,6 +37,10 @@ HERE = Path(__file__).resolve().parent          # top/dv
 PROJ_DIR = HERE.parent                          # top/
 ROOT = PROJ_DIR.parent                          # repo root
 
+# Must match EXPECTED_* in test_plover.py.
+VERSION_OVERRIDE      = 0xCAFE_F00D
+VERSION_HASH_OVERRIDE = 0x1234_5678
+
 BUILD_ARGS = {
     "verilator": ["--trace", "--trace-structs",
                   "-Wall", "-Wno-DECLFILENAME", "-Wno-UNUSEDSIGNAL",
@@ -48,7 +60,7 @@ def _resolve_verilator_root() -> None:
         os.environ["PATH"] = f"{pkg / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}"
 
 
-def _fusesoc_edam() -> dict:
+def _fusesoc_edam() -> tuple[dict, Path]:
     subprocess.run(
         ["fusesoc", "run", "--target", RESOLVE_TARGET, "--setup", CORE_NAME],
         cwd=ROOT, check=True,
@@ -60,47 +72,55 @@ def _fusesoc_edam() -> dict:
     )
     if not candidates:
         pytest.skip("FuseSoC did not produce an EDAM file; is fusesoc installed?")
-    return yaml.safe_load(candidates[-1].read_text())
+    eda_yml = candidates[-1]
+    return yaml.safe_load(eda_yml.read_text()), eda_yml.parent
 
 
-def _sources_from_edam(edam: dict) -> tuple[list[Path], str]:
-    """Map EDAM staged paths back to the live RTL.
+def _sources_from_edam(edam: dict, eda_dir: Path) -> tuple[list[Path], str, list[Path]]:
+    """Resolve EDAM entries to (live RTL sources, toplevel, include dirs).
 
-    With a multi-core design, EDAM file names look like:
-        src/plover_0.1.0/rtl/plover.sv
-        src/axil_shell_0.1.0/rtl/axil_shell.sv
-        src/counter_0.1.0/rtl/counter.sv
+    RTL files (``src/<core>_<ver>/rtl/<file>``) are back-mapped to their
+    live unit dir so edits to RTL are picked up by rebuilds without going
+    through FuseSoC's staging.
 
-    We use the staged ``<core>_<ver>`` segment to choose the right live dir:
-    ``plover_*`` -> ``top/``, otherwise ``units/<core>/``.
+    Generated include files (``is_include_file: true``) live only in the
+    build dir — they have no live source — so we resolve them to absolute
+    paths in the build dir and return their directories for ``-I`` use.
     """
     hdl_types = {"verilogSource", "systemVerilogSource"}
     sources: list[Path] = []
+    include_dirs: set[Path] = set()
+
     for f in edam.get("files", []):
         if f.get("file_type") not in hdl_types:
             continue
-        parts = Path(f["name"]).parts
-        # Find the staged core dir (the segment before "rtl/").
+        name = f["name"]
+        if f.get("is_include_file"):
+            include_dirs.add((eda_dir / name).parent.resolve())
+            continue
+        parts = Path(name).parts
         if "rtl" not in parts:
             continue
         rtl_idx = parts.index("rtl")
-        staged_core = parts[rtl_idx - 1]  # "<corename>_<ver>"
-        rel = Path(*parts[rtl_idx:])      # "rtl/<file>"
+        staged_core = parts[rtl_idx - 1]
+        rel = Path(*parts[rtl_idx:])
         core_name = staged_core.rsplit("_", 1)[0]
         live_dir = PROJ_DIR if core_name == CORE_NAME else ROOT / "units" / core_name
         sources.append(live_dir / rel)
+
     toplevel = edam.get("toplevel", CORE_NAME)
     if isinstance(toplevel, list):
         toplevel = toplevel[0]
-    return sources, toplevel
+    return sources, toplevel, sorted(include_dirs)
 
 
 @pytest.fixture(scope="module")
 def design():
-    edam = _fusesoc_edam()
-    sources, toplevel = _sources_from_edam(edam)
+    edam, eda_dir = _fusesoc_edam()
+    sources, toplevel, include_dirs = _sources_from_edam(edam, eda_dir)
     assert sources, f"no HDL sources resolved from FuseSoC EDAM for {CORE_NAME}"
-    return {"sources": sources, "toplevel": toplevel}
+    return {"sources": sources, "toplevel": toplevel,
+            "include_dirs": include_dirs}
 
 
 def _run(design, cocotb_testcase: str) -> None:
@@ -109,11 +129,17 @@ def _run(design, cocotb_testcase: str) -> None:
         _resolve_verilator_root()
     waves = os.getenv("WAVES", "0") not in ("0", "", "false", "False")
 
+    extra_build = [f"-I{d}" for d in design["include_dirs"]]
+
     runner = get_runner(sim)
     runner.build(
         sources=design["sources"],
         hdl_toplevel=design["toplevel"],
-        build_args=BUILD_ARGS.get(sim, []),
+        build_args=BUILD_ARGS.get(sim, []) + extra_build,
+        parameters={
+            "VERSION_OVERRIDE": VERSION_OVERRIDE,
+            "VERSION_HASH_OVERRIDE": VERSION_HASH_OVERRIDE,
+        },
         waves=waves,
         always=True,
     )
