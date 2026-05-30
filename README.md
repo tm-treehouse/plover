@@ -26,26 +26,25 @@ plover/                                project root
   pyproject.toml                       project metadata + dependencies (uv) + pytest config
   uv.lock                              pinned dependency versions (committed)
   .python-version                      pinned Python version for uv
+  dv/                                  shared DV components (project-local, imported as `dv`)
+    axi_lite_agent.py                  AxiLiteAgent (item/cfg/driver/monitor) on dv_lib bases
+    axi_stream_agent.py                AxiStreamAgent (stimulus side), same shape
+  tools/                               build-time scripts (run by FuseSoC + harnesses)
+    dv_harness.py                      shared FuseSoC + cocotb runner — every unit's pytest shim imports this
+    gen_regs.py                        RDL -> Python regmap + HTML docs + C header (shared across RDL units)
+    rdl_gen.py                         FuseSoC generator wrapper (runs gen_regs at build)
+    version_gen.py                     syscon version-header generator
   units/                               sub-blocks, each self-contained
-    axil_shell/
-      axil_shell.core                  FuseSoC core: RTL filesets + targets + RDL generator
-      rtl/axil_shell.sv                AXI4-Lite register endpoint (the DUT)
-      rdl/axil_shell.rdl               SystemRDL register map — single source of truth
-      rdl/gen_regs.py                  RDL -> Python regmap + HTML docs + C header
-      rdl/rdl_gen.py                   FuseSoC generator wrapper (runs gen_regs at build)
-      rdl/gen/                         generated docs + C header (git-ignored)
-      dv/
-        regmap.py                      generated from the RDL (git-ignored)
-        axil_agent.py                  item, agent cfg, driver (cocotbext-axi BFM), monitor, agent
-        axil_env.py                    env cfg, scoreboard + RDL-driven reference model, vseqr, env
-        axil_test.py                   vseqs (smoke, sweep) + AxilBaseTest (owns the objection)
-        test_axil_shell.py             cocotb entry: @pyuvm.test() classes, cfg wiring
-        test_axil_shell_pytest.py      pytest harness: FuseSoC -> EDAM -> cocotb runner
-    counter/                           template sub-unit (same shape, no RDL)
+    axil_shell/                        AXI4-Lite register endpoint (RDL-driven)
+      axil_shell.core
+      rtl/axil_shell.sv
+      rdl/axil_shell.rdl               SystemRDL — single source of truth for this block's regs
+      dv/                              regmap.py (generated, ignored) + env + test + cocotb entry + shim
+    counter/                           template sub-unit (no RDL)
       counter.core
       rtl/counter.sv
-      dv/<...same shape as axil_shell/dv/...>
-    syscon/                            system controller (RDL + version generator)
+      dv/<env + test + cocotb entry + shim>
+    syscon/                            system controller (RDL + git-version generator)
       syscon.core
       rtl/syscon.sv
       rdl/syscon.rdl
@@ -54,20 +53,22 @@ plover/                                project root
     stream_sink/                       AXI-Stream sink (verification stub)
       stream_sink.core
       rtl/stream_sink.sv
-      dv/<...same shape, no RDL...>
-    axil_xbar/                         AXI-Lite 1-to-N decoder w/ register stages
+      dv/<env + test + cocotb entry + shim>
+    axil_xbar/                         AXI-Lite 1-to-N decoder with register stages
       axil_xbar.core
       rtl/axil_xbar.sv                 the decoder
       rtl/axil_skid_buffer.sv          register-slice helper used inside
       dv/axil_xbar_dv_top.sv           DV harness (xbar + 2 RAM stubs)
       dv/axil_ram_stub.sv              behavioural AXI-Lite RAM (DV only)
-      dv/<...test_axil_xbar.py + pytest harness...>
+      dv/<env + test + cocotb entry + shim>
   top/                              project top — integrates the units above
     plover.core                        FuseSoC core (depends on all five unit cores)
     rtl/plover.sv                      top-level integration (single AXI-Lite slave via xbar)
     dv/
+      plover_env.py                    two-agent env (AxiLite + AxiStream) + minimal scoreboard
+      plover_test.py                   three vseqs + base test; firmware bridge composed here
       test_plover.py                   cocotb entry: smoke, firmware_smoke, firmware_concurrent
-      test_plover_pytest.py            pytest harness for the top
+      test_plover_pytest.py            pytest shim over tools/dv_harness.py
       firmware_bridge.py               ctypes loader + cocotb bridge for host/
     host/                              host-side C "firmware" that drives plover via AXI
       plover_hello.h
@@ -256,27 +257,61 @@ add `--trace-fst` to the Verilator build args in `dv/test_axil_shell_pytest.py`
 
 ## Adding a new sub-unit
 
-The `counter` block is a deliberately tiny template for adding more
-sub-units. With the colocated layout, each block is self-contained under
-`units/<unit>/`:
+Each block lives under `units/<unit>/`:
 
 ```
-units/counter/
-  counter.core                         FuseSoC core (rtl + lint targets)
-  rtl/counter.sv                       the RTL
+units/foo/
+  foo.core                             FuseSoC core (rtl + lint targets)
+  rtl/foo.sv                           the RTL
   dv/
-    counter_agent.py                   item, cfg, driver, monitor, agent
-    counter_env.py                     env cfg, scoreboard + ref model, vseqr, env
-    counter_test.py                    vseqs + CounterBaseTest (owns objection)
-    test_counter.py                    cocotb entry (@pyuvm.test() classes)
-    test_counter_pytest.py             FuseSoC -> EDAM -> cocotb runner
+    foo_env.py                         env cfg, scoreboard + ref model, vseqr, env class
+    foo_test.py                        vseqs + FooBaseTest (owns the run-phase objection)
+    test_foo.py                        cocotb entry — @pyuvm.test() classes + cfg wiring
+    test_foo_pytest.py                 pytest shim over tools/dv_harness.py (~30 lines)
 ```
 
-To add unit `foo`: copy `units/counter/` to `units/foo/`, rename `counter`
-to `foo` throughout (file names, CORE_NAME, TEST_MODULE, class names, `vif`
-signal handles), and change the driver / monitor / `RefModel` to match your
-block. FuseSoC and pytest pick the new unit up automatically (FuseSoC scans
-the whole tree for `.core` files; pytest matches `test_*_pytest.py`).
+The DV builds on the [pyuvm-dv-lib](https://github.com/tm-treehouse/pyuvm-dv-lib)
+base classes (port of OpenTitan's `dv_lib`) for the env/agent/scoreboard
+scaffolding, and on project-local protocol agents from `dv/` for the
+actual AXI-Lite or AXI-Stream stimulus side. Don't write a new
+`*_agent.py` per unit — import `AxiLiteAgent` / `AxiStreamAgent` from
+`dv` and configure them with the unit's signal `prefix`.
+
+The pytest shim is mechanical:
+
+```python
+import sys
+from pathlib import Path
+import pytest
+
+HERE = Path(__file__).resolve().parent
+UNIT_DIR = HERE.parent
+ROOT = UNIT_DIR.parents[1]
+sys.path.insert(0, str(ROOT))
+
+from tools.dv_harness import HarnessConfig, run_testcase
+
+CFG = HarnessConfig(core_name="foo", test_module="test_foo", here=HERE, root=ROOT)
+TESTCASES = ["smoke"]
+
+
+@pytest.mark.parametrize("cocotb_testcase", TESTCASES)
+def test_foo(cocotb_testcase):
+    run_testcase(CFG, cocotb_testcase)
+```
+
+That's it — FuseSoC scans the whole tree for `.core` files, pytest
+matches `test_*_pytest.py`, so the new unit is picked up automatically.
+Optional `HarnessConfig` knobs cover build parameters (`parameters=`),
+extra DV-only SV sources (`extra_sources=`), C/C++ include passthrough
+(`c_include_env=`), and project-top-style live-dir overrides
+(`live_dir_map=`); see `tools/dv_harness.py` for the full list.
+
+For an RDL-bearing unit, add `rdl/foo.rdl` and a `regmap` generator
+block in the .core (see `units/axil_shell/axil_shell.core` for the
+pattern). `tools/gen_regs.py` and `tools/rdl_gen.py` do the work; the
+`.rdl` is the single source of truth and the generated artifacts
+(`regmap.py`, HTML docs, C header) regenerate at every build.
 
 ## Project top (`top/`)
 

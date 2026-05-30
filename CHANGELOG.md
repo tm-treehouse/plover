@@ -7,6 +7,68 @@ to follow semantic versioning.
 ## [Unreleased]
 
 ### Added
+- **Project-local `dv/` package with shared protocol agents.** New
+  top-level `dv/` (peer to `units/`, `top/`, `tools/`) holds protocol-
+  specific DV components that the upstream `pyuvm-dv-lib` doesn't ship:
+  `AxiLiteAgent` (item / cfg / driver / monitor / agent) for AXI-Lite
+  stimulus, `AxiStreamAgent` for AXI-Stream stimulus. The shape mirrors
+  OpenTitan's split between `dv_lib` (base classes — upstream) and
+  `cip_lib` (protocol agents — in-project, since `cip_lib` isn't ported
+  in pyuvm-dv-lib). Both agents extend the dv_lib base classes and use
+  cocotbext-axi BFMs underneath.
+- **Shared pytest harness at `tools/dv_harness.py`.** A single module
+  owns FuseSoC `--setup` invocation, EDAM parsing, source-resolution
+  back to live RTL, Verilator-from-wheel hookup, and the
+  `cocotb_tools.runner` build/test flow. Each unit's
+  `test_<unit>_pytest.py` is now a ~30-line shim that constructs a
+  `HarnessConfig` and calls `run_testcase()`. Replaces six divergent
+  copies (~840 lines total) of the same logic with one shared module
+  (~270 lines) plus tiny shims (~240 lines) — net ~330 lines saved, and
+  no more drift potential between subtly different harnesses.
+
+### Changed
+- **All unit testbenches now use the pyuvm-dv-lib framework.**
+  Previously three units (`stream_sink`, `axil_xbar`, and the project
+  `top`) bypassed the dv_lib base classes and brought up cocotbext-axi
+  BFMs inline. They now follow the same env/agent/scoreboard/test
+  pattern as `axil_shell` / `counter` / `syscon`:
+  - `stream_sink` gets `stream_sink_env.py` (reference model that tracks
+    expected `beat_count`/`data_xor`) + `stream_sink_test.py` (vseq +
+    base test with end-of-run sampling).
+  - `axil_xbar` gets `axil_xbar_env.py` (routing + RAM-stub reference
+    model that predicts response/data for every transaction) +
+    `axil_xbar_test.py` (three vseqs — smoke / decerr / concurrent).
+  - The project top gets `plover_env.py` (two-agent env with AXIS-side
+    scoreboard) + `plover_test.py` (three vseqs, firmware path bypasses
+    the sequencer to call into the C bridge directly).
+  Bug-injection verified all three new scoreboards have teeth: an RTL
+  XOR-by-zero in stream_sink produces `data_xor mismatch: got
+  0x00000000, expected 0x3366176b`; drifting the xbar's reference-model
+  address bases produces `6 scoreboard mismatch(es)`.
+- **Shared `AxiLiteAgent` replaces per-unit duplicates.** `axil_shell`
+  and `syscon` previously each had their own `axil_agent.py` /
+  `syscon_agent.py` — ~270 lines of nearly identical code. Both now
+  import from `dv.axi_lite_agent` and the unit-local copies are
+  deleted. Class names normalized from `Axil*` / `Syscon*` (which
+  conflated protocol with unit) to `AxiLite*` (protocol-named).
+- **Both shared agents now use OpenTitan-style passive bus monitors,
+  not driver mirrors.** `AxiLiteMonitor` and `AxiStreamMonitor` sample
+  the configured bus directly each cycle (RisingEdge + ReadOnly), detect
+  handshakes (VALID && READY), reconstruct transactions, and publish
+  via the analysis port. The drivers no longer mirror to the monitor
+  (they still back-annotate `item.resp`/`item.data` so sequences can
+  read the results after `finish_item`, but they don't write to any
+  analysis port). This matches the OpenTitan dv_lib invariant: the
+  scoreboard's view of what happened comes from the bus, not from any
+  one source of stimulus. The concrete value-add is on the project top:
+  the `firmware_smoke` / `firmware_concurrent` tests issue AXI-Lite
+  transactions from C via the bridge, bypassing the sequencer; with
+  the new monitor the scoreboard sees those transactions ("observed 2
+  AXI-Lite transaction(s) on the bus" after `firmware_smoke` reads
+  shell.ID + syscon.VERSION), whereas the driver-mirror would have
+  shown zero. AxiLite monitor splits read and write paths into
+  independent coroutines so both can be in flight simultaneously
+  without interfering.
 - **`units/axil_xbar/` — AXI4-Lite 1-to-N decoder with optional register
   stages.** New sub-unit at the usual `units/<name>/` shape. The decoder
   routes each AXI-Lite transaction to one of N downstream slaves based on

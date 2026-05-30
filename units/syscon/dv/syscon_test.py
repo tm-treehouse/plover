@@ -4,11 +4,11 @@ from __future__ import annotations
 from dv_lib import DVBaseTest, DVBaseVSeq, DVBaseSequence
 
 from syscon_env import SysconEnv, SysconEnvCfg
-from syscon_agent import SysconItem, SysconOp
+from dv import AxiLiteItem, AxiLiteOp
 import regmap as rm
 
 
-class SysconItemSeq(DVBaseSequence):
+class AxiLiteItemSeq(DVBaseSequence):
     def __init__(self, items, name: str = "syscon_item_seq") -> None:
         super().__init__(name)
         self._items = items
@@ -29,13 +29,13 @@ class SysconSmokeVSeq(DVBaseVSeq):
         await super().body()
         seqr = self.p_sequencer.sub_seqrs["syscon"]
         items = [
-            SysconItem(op=SysconOp.READ, addr=rm.VERSION.offset),
-            SysconItem(op=SysconOp.READ, addr=rm.VERSION_HASH.offset),
-            SysconItem(op=SysconOp.READ, addr=rm.SOFT_RST.offset),
-            SysconItem(op=SysconOp.READ, addr=rm.RESET_CAUSE.offset),
-            SysconItem(op=SysconOp.READ, addr=rm.FEATURES.offset),
+            AxiLiteItem(op=AxiLiteOp.READ, addr=rm.VERSION.offset),
+            AxiLiteItem(op=AxiLiteOp.READ, addr=rm.VERSION_HASH.offset),
+            AxiLiteItem(op=AxiLiteOp.READ, addr=rm.SOFT_RST.offset),
+            AxiLiteItem(op=AxiLiteOp.READ, addr=rm.RESET_CAUSE.offset),
+            AxiLiteItem(op=AxiLiteOp.READ, addr=rm.FEATURES.offset),
         ]
-        await SysconItemSeq(items).start(seqr)
+        await AxiLiteItemSeq(items).start(seqr)
 
 
 class SysconResetCauseVSeq(DVBaseVSeq):
@@ -56,15 +56,15 @@ class SysconResetCauseVSeq(DVBaseVSeq):
         await super().body()
         seqr = self.p_sequencer.sub_seqrs["syscon"]
         items = [
-            SysconItem(op=SysconOp.READ,  addr=rm.RESET_CAUSE.offset),   # 1
-            SysconItem(op=SysconOp.WRITE, addr=rm.RESET_CAUSE.offset, data=0x1),  # 2
-            SysconItem(op=SysconOp.READ,  addr=rm.RESET_CAUSE.offset),
-            SysconItem(op=SysconOp.WRITE, addr=rm.SOFT_RST.offset,    data=0x1),  # 3
-            SysconItem(op=SysconOp.READ,  addr=rm.RESET_CAUSE.offset),   # 4
-            SysconItem(op=SysconOp.WRITE, addr=rm.RESET_CAUSE.offset, data=0x2),  # 5
-            SysconItem(op=SysconOp.READ,  addr=rm.RESET_CAUSE.offset),
+            AxiLiteItem(op=AxiLiteOp.READ,  addr=rm.RESET_CAUSE.offset),   # 1
+            AxiLiteItem(op=AxiLiteOp.WRITE, addr=rm.RESET_CAUSE.offset, data=0x1),  # 2
+            AxiLiteItem(op=AxiLiteOp.READ,  addr=rm.RESET_CAUSE.offset),
+            AxiLiteItem(op=AxiLiteOp.WRITE, addr=rm.SOFT_RST.offset,    data=0x1),  # 3
+            AxiLiteItem(op=AxiLiteOp.READ,  addr=rm.RESET_CAUSE.offset),   # 4
+            AxiLiteItem(op=AxiLiteOp.WRITE, addr=rm.RESET_CAUSE.offset, data=0x2),  # 5
+            AxiLiteItem(op=AxiLiteOp.READ,  addr=rm.RESET_CAUSE.offset),
         ]
-        await SysconItemSeq(items).start(seqr)
+        await AxiLiteItemSeq(items).start(seqr)
 
 
 class SysconBaseTest(DVBaseTest):

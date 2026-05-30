@@ -26,7 +26,7 @@ from dv_lib import (
     UVM_ACTIVE,
 )
 
-from axil_agent import AxilAgent, AxilAgentCfg, AxilItem, AxilOp
+from dv import AxiLiteAgent, AxiLiteAgentCfg, AxiLiteItem, AxiLiteOp
 
 
 _log = logging.getLogger("dv_lib.axil_shell")
@@ -95,11 +95,11 @@ class AxilEnvCfg(DVBaseEnvCfg):
     def __init__(self, name: str = "axil_env_cfg") -> None:
         super().__init__(name)
         self.vif = None                                   # cocotb DUT handle
-        self.axil_agent_cfg: Optional[AxilAgentCfg] = None
+        self.axil_agent_cfg: Optional[AxiLiteAgentCfg] = None
 
     def initialize(self, csr_base_addr: int = 0) -> None:
         super().initialize(csr_base_addr)
-        self.axil_agent_cfg = AxilAgentCfg("axil_agent_cfg")
+        self.axil_agent_cfg = AxiLiteAgentCfg("axil_agent_cfg")
         self.axil_agent_cfg.is_active = UVM_ACTIVE
         self.add_agent_cfg("axil", self.axil_agent_cfg)
 
@@ -128,11 +128,11 @@ class AxilScoreboard(DVBaseScoreboard):
             return
         assert self.axil_fifo is not None
         while True:
-            item: AxilItem = await self.axil_fifo.get()
+            item: AxiLiteItem = await self.axil_fifo.get()
             self._check(item)
 
-    def _check(self, item: AxilItem) -> None:
-        if item.op is AxilOp.WRITE:
+    def _check(self, item: AxiLiteItem) -> None:
+        if item.op is AxiLiteOp.WRITE:
             self.model.apply_write(item.addr, item.data)
             return
         expected = self.model.expected_read(item.addr)
@@ -169,7 +169,7 @@ class AxilEnv(DVBaseEnv):
 
     def __init__(self, name: str = "axil_env", parent=None) -> None:
         super().__init__(name, parent)
-        self.axil_agent: Optional[AxilAgent] = None
+        self.axil_agent: Optional[AxiLiteAgent] = None
 
     def build_phase(self) -> None:
         super().build_phase()
@@ -177,7 +177,7 @@ class AxilEnv(DVBaseEnv):
         # Wire the agent cfg's vif to the env's DUT handle.
         cfg.axil_agent_cfg.vif = cfg.vif
         ConfigDB().set(self, "axil_agent", "cfg", cfg.axil_agent_cfg)
-        self.axil_agent = AxilAgent.create("axil_agent", self)
+        self.axil_agent = AxiLiteAgent.create("axil_agent", self)
 
     def connect_phase(self) -> None:
         super().connect_phase()

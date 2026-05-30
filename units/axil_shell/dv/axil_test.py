@@ -16,14 +16,14 @@ import random
 from dv_lib import DVBaseTest, DVBaseVSeq, DVBaseSequence
 
 from axil_env import AxilEnv, AxilEnvCfg
-from axil_agent import AxilItem, AxilOp
+from dv import AxiLiteItem, AxiLiteOp
 import regmap as rm
 
 
 # ---- An agent-level item sub-sequence -------------------------------
 
-class AxilItemSeq(DVBaseSequence):
-    """Runs a pre-built list of AxilItems on the AXI-Lite sequencer."""
+class AxiLiteItemSeq(DVBaseSequence):
+    """Runs a pre-built list of AxiLiteItems on the AXI-Lite sequencer."""
 
     def __init__(self, items, name: str = "axil_item_seq") -> None:
         super().__init__(name)
@@ -48,11 +48,11 @@ class AxilSmokeVSeq(DVBaseVSeq):
         await super().body()  # dv_init -> apply_reset via clk_rst_vif
         seqr = self.p_sequencer.sub_seqrs["axil"]
         items = [
-            AxilItem(op=AxilOp.WRITE, addr=rm.SCRATCH.offset, data=0xA5A5_1234),
-            AxilItem(op=AxilOp.READ,  addr=rm.SCRATCH.offset),
-            AxilItem(op=AxilOp.READ,  addr=rm.ID.offset),
+            AxiLiteItem(op=AxiLiteOp.WRITE, addr=rm.SCRATCH.offset, data=0xA5A5_1234),
+            AxiLiteItem(op=AxiLiteOp.READ,  addr=rm.SCRATCH.offset),
+            AxiLiteItem(op=AxiLiteOp.READ,  addr=rm.ID.offset),
         ]
-        await AxilItemSeq(items).start(seqr)
+        await AxiLiteItemSeq(items).start(seqr)
 
 
 class AxilSweepVSeq(DVBaseVSeq):
@@ -76,11 +76,11 @@ class AxilSweepVSeq(DVBaseVSeq):
         for _ in range(self.num_txns):
             addr = rng.choice(self.rw_addrs)
             if rng.random() < 0.5:
-                items.append(AxilItem(op=AxilOp.WRITE, addr=addr,
+                items.append(AxiLiteItem(op=AxiLiteOp.WRITE, addr=addr,
                                       data=rng.getrandbits(32)))
             else:
-                items.append(AxilItem(op=AxilOp.READ, addr=addr))
-        await AxilItemSeq(items).start(seqr)
+                items.append(AxiLiteItem(op=AxiLiteOp.READ, addr=addr))
+        await AxiLiteItemSeq(items).start(seqr)
 
 
 # ---- Base test -------------------------------------------------------

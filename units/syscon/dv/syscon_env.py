@@ -23,7 +23,7 @@ from dv_lib import (
     UVM_ACTIVE,
 )
 
-from syscon_agent import SysconAgent, SysconAgentCfg, SysconItem, SysconOp
+from dv import AxiLiteAgent, AxiLiteAgentCfg, AxiLiteItem, AxiLiteOp
 import regmap as rm
 
 
@@ -98,14 +98,14 @@ class SysconEnvCfg(DVBaseEnvCfg):
     def __init__(self, name: str = "syscon_env_cfg") -> None:
         super().__init__(name)
         self.vif = None
-        self.syscon_agent_cfg: Optional[SysconAgentCfg] = None
+        self.syscon_agent_cfg: Optional[AxiLiteAgentCfg] = None
         # Test-supplied expectations for the version registers.
         self.version_value: int = 0
         self.version_hash: int = 0
 
     def initialize(self, csr_base_addr: int = 0) -> None:
         super().initialize(csr_base_addr)
-        self.syscon_agent_cfg = SysconAgentCfg("syscon_agent_cfg")
+        self.syscon_agent_cfg = AxiLiteAgentCfg("syscon_agent_cfg")
         self.syscon_agent_cfg.is_active = UVM_ACTIVE
         self.add_agent_cfg("syscon", self.syscon_agent_cfg)
 
@@ -131,12 +131,12 @@ class SysconScoreboard(DVBaseScoreboard):
         self.model = RegModel(env_cfg.version_value, env_cfg.version_hash)
         assert self.fifo is not None
         while True:
-            item: SysconItem = await self.fifo.get()
+            item: AxiLiteItem = await self.fifo.get()
             self._check(item)
 
-    def _check(self, item: SysconItem) -> None:
+    def _check(self, item: AxiLiteItem) -> None:
         assert self.model is not None
-        if item.op is SysconOp.WRITE:
+        if item.op is AxiLiteOp.WRITE:
             self.model.apply_write(item.addr, item.data)
             return
         expected = self.model.expected_read(item.addr)
@@ -169,14 +169,14 @@ class SysconEnv(DVBaseEnv):
 
     def __init__(self, name: str = "syscon_env", parent=None) -> None:
         super().__init__(name, parent)
-        self.syscon_agent: Optional[SysconAgent] = None
+        self.syscon_agent: Optional[AxiLiteAgent] = None
 
     def build_phase(self) -> None:
         super().build_phase()
         cfg: SysconEnvCfg = self.cfg  # type: ignore[assignment]
         cfg.syscon_agent_cfg.vif = cfg.vif
         ConfigDB().set(self, "syscon_agent", "cfg", cfg.syscon_agent_cfg)
-        self.syscon_agent = SysconAgent.create("syscon_agent", self)
+        self.syscon_agent = AxiLiteAgent.create("syscon_agent", self)
 
     def connect_phase(self) -> None:
         super().connect_phase()

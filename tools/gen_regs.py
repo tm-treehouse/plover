@@ -1,24 +1,31 @@
 #!/usr/bin/env python3
 """
-Generate register artifacts from the SystemRDL map.
+Generate register artifacts from a SystemRDL map.
 
-Single source of truth: ``rdl/axil_shell.rdl``. This script produces, into
-``rdl/gen/`` (git-ignored, regenerated at build):
+Shared across every unit that has an ``.rdl`` (today: axil_shell, syscon).
+The unit's ``.rdl`` is the single source of truth for that block's
+register layout; this script consumes it and produces, under the unit's
+build dir (git-ignored, regenerated at build):
 
-* ``regmap.py``  — a small, dependency-free Python register map (plain
-                   dataclasses): per-register address + per-field position,
-                   mask, reset, and access. The testbench imports this so
-                   sequences/scoreboard address registers by name instead of
-                   magic numbers. Usable elsewhere too (software models, other
-                   blocks) since it has no PeakRDL runtime dependency.
-* ``html/``      — browsable HTML documentation (PeakRDL-html).
-* ``axil_shell_regs.h`` — C header for software (PeakRDL-cheader).
+* ``regmap.py``         — a small, dependency-free Python register map
+                          (plain dataclasses): per-register address +
+                          per-field position, mask, reset, access. The
+                          testbench imports this so sequences and the
+                          scoreboard reference registers by name instead
+                          of magic numbers. Usable elsewhere too
+                          (software models, other blocks) since it has
+                          no PeakRDL runtime dependency.
+* ``html/``             — browsable HTML documentation (peakrdl-html).
+* ``<addrmap>_regs.h``  — C header for firmware (peakrdl-cheader). The
+                          basename defaults to the RDL filename (e.g.
+                          ``axil_shell_regs.h``) but is overridable.
 
-Run directly:
-    python rdl/gen_regs.py [--rdl rdl/axil_shell.rdl] [--outdir rdl/gen]
+Run directly (per unit):
+    python tools/gen_regs.py --rdl units/<unit>/rdl/<unit>.rdl \\
+                             --outdir <unit>/build/gen
 
-It is also invoked by the FuseSoC generator (rdl_gen.core) at build time, so
-the generated map always matches the RDL.
+It is also invoked by the FuseSoC generator (``tools/rdl_gen.py``) at
+build time, so the generated artifacts always match the live RDL.
 """
 from __future__ import annotations
 
