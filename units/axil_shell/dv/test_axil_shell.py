@@ -25,7 +25,7 @@ from pyuvm import ConfigDB
 from dv_lib import ClkRstIf
 
 from axil_env import AxilEnvCfg
-from axil_test import AxilBaseTest, AxilSweepTest
+from axil_test import AxilBaseTest, AxilSweepTest, AxilControlPortsTest
 # Importing the vseq module registers the vseqs as DVBaseSequence subclasses
 # so DVBaseTest.create_seq_by_name() can resolve them by name.
 import axil_test  # noqa: F401
@@ -70,4 +70,9 @@ class smoke(_CfgWiringMixin, AxilBaseTest):
 
 @pyuvm.test()
 class sweep(_CfgWiringMixin, AxilSweepTest):
+    pass
+
+
+@pyuvm.test()
+class control_ports(_CfgWiringMixin, AxilControlPortsTest):
     pass

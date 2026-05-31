@@ -200,6 +200,18 @@ class AxiLiteMonitor(DVBaseMonitor):
     def _sig(dut, prefix: str, name: str):
         return getattr(dut, f"{prefix}_{name}")
 
+    def _in_reset(self) -> bool:
+        """True iff the configured reset signal is currently asserted.
+
+        Active-low reset (the default) is asserted when the signal value
+        is 0; active-high is asserted when 1. Called after ReadOnly() so
+        the signal is stable.
+        """
+        assert self.cfg is not None and self.cfg.vif is not None
+        rst = getattr(self.cfg.vif, self.cfg.reset_signal_name)
+        v = int(rst.value)
+        return (v == 0) if self.cfg.reset_active_low else (v == 1)
+
     async def _watch_writes(self, dut, prefix: str) -> None:
         """Pair each AW with its W and B to publish one item per write.
 
@@ -207,6 +219,12 @@ class AxiLiteMonitor(DVBaseMonitor):
         either order, and B follows. We collect AW addresses in one
         queue and W payloads in another; pair them in arrival order to
         form a pending transaction; finalize with the B response.
+
+        Reset behaviour: while reset is asserted, internal queues are
+        flushed every cycle and no sampling happens. This prevents
+        partially-observed transactions (e.g. an AW that was captured
+        before reset hit, where the W never arrived) from pairing
+        against unrelated post-reset traffic.
         """
         from cocotb.triggers import RisingEdge, ReadOnly
         from collections import deque
@@ -228,6 +246,11 @@ class AxiLiteMonitor(DVBaseMonitor):
         while True:
             await RisingEdge(dut.clk)
             await ReadOnly()
+            if self._in_reset():
+                aw_q.clear()
+                w_q.clear()
+                pending.clear()
+                continue
             if int(awvalid.value) and int(awready.value):
                 aw_q.append(int(awaddr.value))
             if int(wvalid.value) and int(wready.value):
@@ -247,7 +270,11 @@ class AxiLiteMonitor(DVBaseMonitor):
                     self.analysis_port.write(item)
 
     async def _watch_reads(self, dut, prefix: str) -> None:
-        """Pair each AR with its R to publish one item per read."""
+        """Pair each AR with its R to publish one item per read.
+
+        Reset behaviour: same as :meth:`_watch_writes` — queues flushed
+        every cycle reset is asserted.
+        """
         from cocotb.triggers import RisingEdge, ReadOnly
         from collections import deque
 
@@ -264,6 +291,9 @@ class AxiLiteMonitor(DVBaseMonitor):
         while True:
             await RisingEdge(dut.clk)
             await ReadOnly()
+            if self._in_reset():
+                ar_q.clear()
+                continue
             if int(arvalid.value) and int(arready.value):
                 ar_q.append(int(araddr.value))
             if int(rvalid.value) and int(rready.value) and ar_q:

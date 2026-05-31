@@ -382,13 +382,22 @@ tying `counter_enable=0`, bypassing `soft_rst_n`, truncating the AXIS
 stimulus, mis-stating an expected register value in the C) makes the
 relevant check fail loudly.
 
-**Known limitation, intentionally left as scaffolding**: `axil_shell` does
-not currently expose its `CONTROL` register bits as ports, so the counter's
-`enable`/`clear` are tied to constants in `plover.sv` rather than driven
-from `CONTROL.ENABLE`. Comments in both `top/rtl/plover.sv` and the
-integration testbench flag this as a follow-up — extending the shell to
-publish CONTROL is the natural next step, after which the integration test
-grows a "write CONTROL.ENABLE=0, confirm count freezes" check.
+**Software controls the counter.** `axil_shell.CONTROL.ENABLE` (bit 0
+of register `0x04`) is now plumbed through to `u_counter.enable` in
+`plover.sv`. After reset the bit is 0 (counter held), so the first
+thing software does is write `CONTROL.ENABLE = 1` to start the
+counter. The integration smoke test exercises the full cycle:
+
+* Pre-enable, counter held at 0 (regression catch: any wiring that
+  ties `counter_enable` high will fail this check immediately).
+* Write `ENABLE=1`, counter advances ten cycles in ten clocks.
+* Write `ENABLE=0`, counter freezes for ten cycles (count unchanged).
+* Re-enable for the soft-reset gating test that follows.
+
+The 31 spare CONTROL bits (`SPARE[31:1]`) are exposed from `axil_shell`
+as a `control_spare[30:0]` port and routed up but unused at the top —
+they're available for future use (e.g. one bit could drive
+`u_counter.clear`).
 
 The synthesis scaffolding under `top/syn/` is intentionally
 vendor-agnostic at this stage; see `top/syn/README.md` for how to wire a

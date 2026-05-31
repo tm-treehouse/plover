@@ -13,7 +13,26 @@ Why this is separate from tools/:
     generator) invoked at FuseSoC time. The DV agents are runtime
     components consumed by the testbenches. Keeping them apart keeps each
     directory's role clear.
+
+Active vs passive mode:
+    Both agents work in either mode via the base ``DVBaseAgent`` logic
+    keyed on ``cfg.is_active``:
+
+    * ``UVM_ACTIVE``   — creates monitor + sequencer + driver. The
+                          default; use when this agent drives stimulus.
+    * ``UVM_PASSIVE``  — creates only the monitor. Use when you want to
+                          observe an external master (e.g. monitoring
+                          the downstream side of the xbar from a
+                          top-level test) without driving stimulus.
+
+    Set the mode on the agent cfg before adding it to the env::
+
+        cfg.axil_agent_cfg = AxiLiteAgentCfg(\"axil_obs_cfg\")
+        cfg.axil_agent_cfg.is_active = UVM_PASSIVE
+        cfg.axil_agent_cfg.prefix = \"m_axil_0\"  # downstream port to observe
 """
+from dv_lib import UVM_ACTIVE, UVM_PASSIVE
+
 from dv.axi_lite_agent import (
     AxiLiteOp, AxiLiteItem, AxiLiteAgentCfg, AxiLiteDriver, AxiLiteMonitor,
     AxiLiteAgent,
@@ -24,6 +43,7 @@ from dv.axi_stream_agent import (
 )
 
 __all__ = [
+    "UVM_ACTIVE", "UVM_PASSIVE",
     "AxiLiteOp", "AxiLiteItem", "AxiLiteAgentCfg",
     "AxiLiteDriver", "AxiLiteMonitor", "AxiLiteAgent",
     "AxiStreamItem", "AxiStreamAgentCfg",

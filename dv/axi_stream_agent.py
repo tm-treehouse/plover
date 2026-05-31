@@ -131,6 +131,11 @@ class AxiStreamMonitor(DVBaseMonitor):
     each accepted beat, publishes an :class:`AxiStreamItem` with the
     observed TDATA. Because it samples the bus, it sees beats regardless
     of which master drove them.
+
+    Reset behaviour: while reset is asserted, sampling is skipped. Since
+    the monitor has no internal state between beats (one item per
+    accepted beat, no pairing across cycles), no flush is needed — just
+    don't sample.
     """
 
     async def collect_trans(self) -> None:
@@ -143,10 +148,17 @@ class AxiStreamMonitor(DVBaseMonitor):
         tdata  = getattr(dut, f"{prefix}_tdata")
         tvalid = getattr(dut, f"{prefix}_tvalid")
         tready = getattr(dut, f"{prefix}_tready")
+        rst    = getattr(dut, self.cfg.reset_signal_name)
 
         while True:
             await RisingEdge(dut.clk)
             await ReadOnly()
+            # Skip sampling during reset (signals may be X or
+            # mid-transaction).
+            v = int(rst.value)
+            in_reset = (v == 0) if self.cfg.reset_active_low else (v == 1)
+            if in_reset:
+                continue
             if int(tvalid.value) and int(tready.value):
                 item = AxiStreamItem(data=int(tdata.value))
                 if self.analysis_port is not None:

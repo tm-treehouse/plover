@@ -7,6 +7,28 @@ to follow semantic versioning.
 ## [Unreleased]
 
 ### Added
+- **`axil_shell.CONTROL` bits exposed as ports + integration use.**
+  `axil_shell` now drives two new combinational outputs continuously
+  from `reg_control`: `control_enable` (bit 0 = `CONTROL.ENABLE`) and
+  `control_spare[30:0]` (bits 31:1 = `CONTROL.SPARE`). In `plover.sv`
+  these are plumbed to gate the counter, so software writes to
+  `CONTROL.ENABLE` actually start/stop the count. The integration
+  smoke test exercises the full cycle: counter held at 0 after reset
+  (ENABLE=0 default), write ENABLE=1 → counter advances ten cycles in
+  ten clocks, write ENABLE=0 → counter freezes for ten cycles
+  unchanged. New `axil_shell` unit test `control_ports` directly
+  drives CONTROL and samples the port outputs to confirm bit-for-bit
+  fidelity; bug-injection verified (tying `control_enable` high
+  produces "control_enable port: wrote CONTROL=0x00000000, expected
+  enable=0, got 1").
+- **Passive-only agent mode documented and exposed.** Both
+  `AxiLiteAgent` and `AxiStreamAgent` already supported `UVM_PASSIVE`
+  via the inherited `DVBaseAgent.build_phase` logic (monitor only, no
+  driver, no sequencer); the `dv/` package now re-exports
+  `UVM_ACTIVE` / `UVM_PASSIVE` so testbenches can do
+  `from dv import UVM_PASSIVE` alongside the agent classes. Module
+  docstring documents the use case (observing an external master
+  whose stimulus this DUT doesn't drive).
 - **Project-local `dv/` package with shared protocol agents.** New
   top-level `dv/` (peer to `units/`, `top/`, `tools/`) holds protocol-
   specific DV components that the upstream `pyuvm-dv-lib` doesn't ship:
@@ -27,6 +49,15 @@ to follow semantic versioning.
   no more drift potential between subtly different harnesses.
 
 ### Changed
+- **AXI agents handle reset cleanly.** The `AxiLiteMonitor` and
+  `AxiStreamMonitor` now check the configured reset signal each
+  cycle. While reset is asserted, AxiLite flushes its internal AW/W/
+  AR pairing queues (so a partially-observed transaction that gets
+  killed by a mid-flight reset doesn't pair against unrelated
+  post-reset traffic), and AxiStream skips sampling (no internal
+  state to flush — it just doesn't emit beats for X-or-mid-reset
+  signal values). No current test exercises mid-transaction reset,
+  but the defensive code is in place for future tests that do.
 - **All unit testbenches now use the pyuvm-dv-lib framework.**
   Previously three units (`stream_sink`, `axil_xbar`, and the project
   `top`) bypassed the dv_lib base classes and brought up cocotbext-axi

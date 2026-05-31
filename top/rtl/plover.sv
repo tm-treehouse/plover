@@ -82,10 +82,17 @@ module plover #(
     localparam int unsigned SHELL_IDX  = 0;
     localparam int unsigned SYSCON_IDX = 1;
 
-    // axil_shell does not currently surface CONTROL on its port list, so the
-    // counter inputs stay structural placeholders. Once the shell exposes
-    // CONTROL.ENABLE / a CONTROL spare bit, replace these with real wires.
-    wire counter_enable = 1'b1;
+    // CONTROL fields driven by axil_shell.
+    //   * shell_control_enable drives the counter's enable. Software
+    //     writes to axil_shell.CONTROL.ENABLE turn the counter on or
+    //     off; bug-injection covered in the top integration smoke test.
+    //   * shell_control_spare carries the remaining 31 R/W bits of the
+    //     CONTROL register. Unused today (bit 0 of SPARE could drive
+    //     the counter's `clear`, for instance — left tied off until a
+    //     downstream consumer needs it).
+    wire        shell_control_enable;
+    wire [30:0] shell_control_spare;
+    wire counter_enable = shell_control_enable;
     wire counter_clear  = 1'b0;
 
     wire syscon_soft_rst_n;
@@ -196,7 +203,9 @@ module plover #(
         .s_axil_rdata   (m_axil_rdata  [SHELL_IDX*32 +: 32]),
         .s_axil_rresp   (m_axil_rresp  [SHELL_IDX*2  +: 2]),
         .s_axil_rvalid  (m_axil_rvalid [SHELL_IDX]),
-        .s_axil_rready  (m_axil_rready [SHELL_IDX])
+        .s_axil_rready  (m_axil_rready [SHELL_IDX]),
+        .control_enable (shell_control_enable),
+        .control_spare  (shell_control_spare)
     );
 
     syscon #(

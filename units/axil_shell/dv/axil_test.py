@@ -83,6 +83,48 @@ class AxilSweepVSeq(DVBaseVSeq):
         await AxiLiteItemSeq(items).start(seqr)
 
 
+class AxilControlPortsVSeq(DVBaseVSeq):
+    """Drive the CONTROL register and verify the new field-output ports
+    (``control_enable``, ``control_spare``) reflect the written bits.
+
+    The ports are combinational fan-out from ``reg_control``, so they
+    update on the cycle the write commits. We issue each write through
+    the sequencer, wait one cycle for the assignment to settle on the
+    output, then sample.
+    """
+
+    def __init__(self, name: str = "AxilControlPortsVSeq") -> None:
+        super().__init__(name)
+
+    async def _write_and_check(self, seqr, value: int) -> None:
+        await AxiLiteItemSeq([
+            AxiLiteItem(op=AxiLiteOp.WRITE, addr=rm.CONTROL.offset, data=value),
+        ]).start(seqr)
+        # One extra cycle for the continuous assign to propagate after B.
+        import cocotb
+        from cocotb.triggers import ClockCycles
+        await ClockCycles(cocotb.top.clk, 1)
+        got_enable = int(cocotb.top.control_enable.value)
+        got_spare  = int(cocotb.top.control_spare.value)
+        exp_enable = value & 0x1
+        exp_spare  = (value >> 1) & 0x7FFF_FFFF
+        assert got_enable == exp_enable, (
+            f"control_enable port: wrote CONTROL=0x{value:08x}, "
+            f"expected enable={exp_enable}, got {got_enable}")
+        assert got_spare == exp_spare, (
+            f"control_spare port: wrote CONTROL=0x{value:08x}, "
+            f"expected spare=0x{exp_spare:08x}, got 0x{got_spare:08x}")
+
+    async def body(self) -> None:
+        await super().body()
+        seqr = self.p_sequencer.sub_seqrs["axil"]
+        # Sweep ENABLE on/off and exercise a few spare-bit patterns.
+        await self._write_and_check(seqr, 0x0000_0001)  # enable=1, spare=0
+        await self._write_and_check(seqr, 0x0000_0000)  # enable=0, spare=0
+        await self._write_and_check(seqr, 0xAAAA_AAAB)  # mixed pattern, enable=1
+        await self._write_and_check(seqr, 0x5555_5554)  # mixed pattern, enable=0
+
+
 # ---- Base test -------------------------------------------------------
 
 class AxilBaseTest(DVBaseTest):
@@ -117,3 +159,9 @@ class AxilSweepTest(AxilBaseTest):
     def __init__(self, name: str = "AxilSweepTest", parent=None) -> None:
         super().__init__(name, parent)
         self.test_seq_s = "AxilSweepVSeq"
+
+
+class AxilControlPortsTest(AxilBaseTest):
+    def __init__(self, name: str = "AxilControlPortsTest", parent=None) -> None:
+        super().__init__(name, parent)
+        self.test_seq_s = "AxilControlPortsVSeq"

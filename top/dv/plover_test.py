@@ -41,6 +41,7 @@ UNMAPPED    = 0x0000_2000
 
 SHELL_ID_OFFSET   = 0x0C
 SHELL_ID_EXPECTED = 0xC0C07B01
+SHELL_CONTROL_OFFSET = 0x04   # axil_shell.CONTROL register
 SYSCON_VERSION_OFFSET   = 0x00
 SYSCON_SOFT_RST_OFFSET  = 0x08
 EXPECTED_SYSCON_VERSION = 0xCAFE_F00D
@@ -133,7 +134,21 @@ class PloverSmokeVSeq(DVBaseVSeq):
         await PloverAxilItemSeq(items).start(seqr)
         assert items[0].resp == RESP_OKAY, "shell broken after DECERR"
 
-        # 3) Counter is wired and advancing.
+        # 3) CONTROL.ENABLE gates the counter.
+        # After reset CONTROL.ENABLE=0, so the counter is held at 0.
+        # The first thing software has to do is turn it on.
+        await ClockCycles(dut.clk, 5)
+        held_at_reset = int(dut.count.value)
+        assert held_at_reset == 0, (
+            f"counter pre-enable: expected 0 (ENABLE=0 after reset), "
+            f"got 0x{held_at_reset:x}")
+
+        # Write ENABLE=1; counter should start advancing.
+        await PloverAxilItemSeq([
+            AxiLiteItem(op=AxiLiteOp.WRITE,
+                        addr=SHELL_BASE + SHELL_CONTROL_OFFSET,
+                        data=1),
+        ]).start(seqr)
         await RisingEdge(dut.clk)
         start = int(dut.count.value)
         await ClockCycles(dut.clk, 10)
@@ -141,8 +156,31 @@ class PloverSmokeVSeq(DVBaseVSeq):
         mask = (1 << len(dut.count)) - 1
         advanced = (end - start) & mask
         assert advanced == 10, (
-            f"counter advance: expected 10, got {advanced} "
+            f"counter advance after ENABLE=1: expected 10, got {advanced} "
             f"(start=0x{start:x} end=0x{end:x})")
+
+        # Write ENABLE=0; counter should freeze.
+        await PloverAxilItemSeq([
+            AxiLiteItem(op=AxiLiteOp.WRITE,
+                        addr=SHELL_BASE + SHELL_CONTROL_OFFSET,
+                        data=0),
+        ]).start(seqr)
+        # Two cycles for the write to commit and the next-state to settle.
+        await ClockCycles(dut.clk, 2)
+        frozen_a = int(dut.count.value)
+        await ClockCycles(dut.clk, 10)
+        frozen_b = int(dut.count.value)
+        assert frozen_a == frozen_b, (
+            f"counter freeze after ENABLE=0: count moved from "
+            f"0x{frozen_a:x} to 0x{frozen_b:x} (expected unchanged)")
+
+        # Re-enable for the soft-reset check below: that step expects the
+        # counter to resume to a small value after the soft-reset window.
+        await PloverAxilItemSeq([
+            AxiLiteItem(op=AxiLiteOp.WRITE,
+                        addr=SHELL_BASE + SHELL_CONTROL_OFFSET,
+                        data=1),
+        ]).start(seqr)
 
         # 4) Soft-reset via syscon gates the counter.
         await PloverAxilItemSeq([

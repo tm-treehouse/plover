@@ -52,7 +52,18 @@ module axil_shell #(
     output reg  [DATA_WIDTH-1:0]     s_axil_rdata,
     output reg  [1:0]                s_axil_rresp,
     output reg                       s_axil_rvalid,
-    input  wire                      s_axil_rready
+    input  wire                      s_axil_rready,
+
+    // ---- CONTROL register fields exposed as ports ----
+    // CONTROL.ENABLE — single-bit master enable. Mirrors STATUS.READY
+    // (which is driven from this bit internally for software readback).
+    // Integrators drive their downstream logic from this; e.g. plover.sv
+    // gates the free-running counter on it.
+    output wire                      control_enable,
+    // CONTROL.SPARE — 31 spare R/W bits. Reserved for future use by the
+    // integrator (LED bits, mode selects, etc.). The RDL doesn't assign
+    // semantics yet, so consumers should treat these as "design-defined."
+    output wire [DATA_WIDTH-2:0]     control_spare
 );
 
     localparam [1:0] RESP_OKAY = 2'b00;
@@ -151,6 +162,13 @@ module axil_shell #(
             end
         end
     end
+
+    // ---------------------------------------------------------------------
+    // CONTROL field outputs: combinational fan-out of reg_control bits.
+    // Layout matches the RDL: ENABLE = bit 0, SPARE = bits 31:1.
+    // ---------------------------------------------------------------------
+    assign control_enable = reg_control[0];
+    assign control_spare  = reg_control[DATA_WIDTH-1:1];
 
 endmodule
 

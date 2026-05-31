@@ -23,7 +23,7 @@ CFG = HarnessConfig(
     here=HERE,
     root=ROOT,
 )
-TESTCASES = ["smoke", "sweep"]
+TESTCASES = ["smoke", "sweep", "control_ports"]
 
 
 @pytest.mark.parametrize("cocotb_testcase", TESTCASES)
