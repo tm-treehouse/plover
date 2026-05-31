@@ -1,0 +1,58 @@
+CAPI=2:
+# FuseSoC core for the fir_filter unit. Pure RTL — no RDL; the coefficient
+# bank is a memory-style AXI-Lite slave described inline in the RTL.
+
+name: ::fir_filter:0.1.0
+description: Direct-form FIR with AXI-Lite coefficient bank (hot-update, AXIS samples)
+
+filesets:
+  rtl:
+    files:
+      - rtl/fir_filter.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+      - rtl
+    toplevel: fir_filter
+
+  lint:
+    default_tool: verilator
+    filesets:
+      - rtl
+    toplevel: fir_filter
+    tools:
+      verilator:
+        mode: lint-only
+        verilator_options:
+          - -Wall
+          - -Wno-DECLFILENAME
+          - -Wno-UNUSEDSIGNAL
+
+parameters:
+  N_TAPS:
+    datatype: int
+    description: Number of taps (and depth of coefficient memory)
+    paramtype: vlogparam
+    default: 8
+  IN_W:
+    datatype: int
+    description: Input sample width (signed bits)
+    paramtype: vlogparam
+    default: 16
+  COEF_W:
+    datatype: int
+    description: Coefficient width (signed bits)
+    paramtype: vlogparam
+    default: 16
+  OUT_W:
+    datatype: int
+    description: Output sample width (signed bits)
+    paramtype: vlogparam
+    default: 16
+  OUT_SHIFT:
+    datatype: int
+    description: Right-shift applied to accumulator before output truncation
+    paramtype: vlogparam
+    default: 15

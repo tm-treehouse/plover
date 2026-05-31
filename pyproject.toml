@@ -32,6 +32,12 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8.0",
+    # DSP test plots (HDL vs Python-model comparison images written under
+    # build/dsp_plots/ at the end of each DSP testcase). Not required for
+    # the test logic itself — if matplotlib is unavailable, plotting is
+    # silently skipped and tests still pass/fail on their bit-exact
+    # comparisons.
+    "matplotlib>=3.7",
 ]
 
 # dv_lib is not on PyPI — pull it from the upstream repo. Pin to a tag/commit

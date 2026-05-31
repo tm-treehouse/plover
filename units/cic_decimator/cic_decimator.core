@@ -1,0 +1,57 @@
+CAPI=2:
+# FuseSoC core for the cic_decimator unit. Pure RTL — no RDL, no firmware.
+
+name: ::cic_decimator:0.1.0
+description: CIC decimation filter (parameterised, AXI4-Stream in/out)
+
+filesets:
+  rtl:
+    files:
+      - rtl/cic_decimator.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+      - rtl
+    toplevel: cic_decimator
+
+  lint:
+    default_tool: verilator
+    filesets:
+      - rtl
+    toplevel: cic_decimator
+    tools:
+      verilator:
+        mode: lint-only
+        verilator_options:
+          - -Wall
+          - -Wno-DECLFILENAME
+          - -Wno-UNUSEDSIGNAL
+
+parameters:
+  STAGES:
+    datatype: int
+    description: Number of integrator/comb stages (N)
+    paramtype: vlogparam
+    default: 3
+  DECIM:
+    datatype: int
+    description: Decimation factor (R)
+    paramtype: vlogparam
+    default: 4
+  DELAY:
+    datatype: int
+    description: Comb differential delay (M)
+    paramtype: vlogparam
+    default: 1
+  IN_W:
+    datatype: int
+    description: Input sample width (signed bits)
+    paramtype: vlogparam
+    default: 16
+  OUT_W:
+    datatype: int
+    description: Output sample width (signed bits)
+    paramtype: vlogparam
+    default: 16
