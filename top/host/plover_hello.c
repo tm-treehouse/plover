@@ -100,3 +100,39 @@ int plover_hello_world(const plover_host_ops* ops,
     log_msg(ops, "plover firmware: hello world complete");
     return 0;
 }
+
+int plover_program_fir(const plover_host_ops* ops,
+                       uint32_t fir_base,
+                       const int32_t* coefs,
+                       uint32_t n_taps,
+                       int verify_readback) {
+    if (!ops || !ops->read || !ops->write || !coefs) {
+        return -1;
+    }
+    log_msg(ops, "plover firmware: programming FIR @ 0x%08x with %u tap(s)",
+            fir_base, n_taps);
+    for (uint32_t i = 0; i < n_taps; i++) {
+        const uint32_t addr = fir_base + 4u * i;
+        /* The FIR's RTL latches the low COEF_W bits and ignores the
+         * rest, so just writing the raw int32_t works regardless of
+         * the COEF_W choice (8/12/16/24/32). Cast through uint32_t to
+         * avoid implementation-defined behaviour on negative shift. */
+        const uint32_t data = (uint32_t)coefs[i];
+        ops->write(addr, data);
+    }
+    if (verify_readback) {
+        for (uint32_t i = 0; i < n_taps; i++) {
+            const uint32_t addr   = fir_base + 4u * i;
+            const uint32_t got    = ops->read(addr);
+            const uint32_t expect = (uint32_t)coefs[i];
+            if (got != expect) {
+                log_msg(ops,
+                        "FAIL: FIR coef[%u] readback = 0x%08x, expected 0x%08x",
+                        i, got, expect);
+                return (int)(10 + i);  /* distinct rc per tap */
+            }
+        }
+        log_msg(ops, "plover firmware: FIR coef readback OK (%u taps)", n_taps);
+    }
+    return 0;
+}

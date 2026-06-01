@@ -96,6 +96,17 @@ module fir_filter #(
     localparam int ACCUM_W  = PROD_W + TAP_BITS;
     // Address bits needed to enumerate N_TAPS words; min 1.
     localparam int IDX_BITS = (N_TAPS > 1) ? $clog2(N_TAPS) : 1;
+    // Byte-address bits used by the slave: 2 (word-align) + IDX_BITS
+    // (tap selector). The slave masks any higher bits before decoding —
+    // this lets the FIR plug into a decoder/xbar that forwards the
+    // full system address (e.g. 0x0000_2000 + 4*i) without seeing every
+    // page-base bit as out-of-range. Standalone DV still works because
+    // the harness drives addresses in [0, N_TAPS*4) where the high bits
+    // are already zero. With ADDR_BITS bits we cover [0, N_TAPS*4) plus
+    // any aliased copies further up address space; the decoder is
+    // expected to handle aliasing.
+    localparam int ADDR_BITS = 2 + IDX_BITS;
+    localparam logic [31:0] ADDR_MASK = (1 << ADDR_BITS) - 1;
 
     localparam logic [1:0] RESP_OKAY   = 2'b00;
     localparam logic [1:0] RESP_DECERR = 2'b11;
@@ -210,11 +221,21 @@ module fir_filter #(
 
     // Index decoded from the captured AW or AR address. Word offset =
     // addr[31:2]. We compare against N_TAPS for DECERR.
-    wire [29:0] aw_word_idx = aw_addr_q[31:2];
+    // Index decoded from the captured AW or AR address. Word offset =
+    // (addr & ADDR_MASK)[ADDR_BITS-1:2]. The mask drops upstream
+    // decoder/xbar page-base bits so the FIR works equally well at
+    // address 0 (standalone DV) and at e.g. 0x0000_2000 (integrated
+    // behind an xbar). aw_in_range is always true once the mask is
+    // applied — we keep the check as belt-and-braces and to surface
+    // the case where N_TAPS is not a power of two and the mask covers
+    // a few addresses beyond the last valid tap.
+    wire [31:0] aw_masked   = aw_addr_q & ADDR_MASK;
+    wire [29:0] aw_word_idx = aw_masked[31:2];
     wire        aw_in_range = (aw_word_idx < 30'(N_TAPS));
     wire [IDX_BITS-1:0] aw_idx = aw_word_idx[IDX_BITS-1:0];
 
-    wire [29:0] ar_word_idx = ar_addr_q[31:2];
+    wire [31:0] ar_masked   = ar_addr_q & ADDR_MASK;
+    wire [29:0] ar_word_idx = ar_masked[31:2];
     wire        ar_in_range = (ar_word_idx < 30'(N_TAPS));
     wire [IDX_BITS-1:0] ar_idx = ar_word_idx[IDX_BITS-1:0];
 

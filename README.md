@@ -28,7 +28,9 @@ plover/                                project root
   .python-version                      pinned Python version for uv
   dv/                                  shared DV components (project-local, imported as `dv`)
     axi_lite_agent.py                  AxiLiteAgent (item/cfg/driver/monitor) on dv_lib bases
-    axi_stream_agent.py                AxiStreamAgent (stimulus side), same shape
+    axi_stream_agent.py                AxiStreamAgent — role-aware (source / sink)
+    dsp_models.py                      bit-exact Python references (CIC, FIR, CicFirChain)
+    dsp_plot.py                        comparison-plot helper for DSP tests
   tools/                               build-time scripts (run by FuseSoC + harnesses)
     dv_harness.py                      shared FuseSoC + cocotb runner — every unit's pytest shim imports this
     gen_regs.py                        RDL -> Python regmap + HTML docs + C header (shared across RDL units)
@@ -50,7 +52,7 @@ plover/                                project root
       rdl/syscon.rdl
       rdl/gen_version.py
       dv/<...same shape as axil_shell/dv/...>
-    stream_sink/                       AXI-Stream sink (verification stub)
+    stream_sink/                       AXI-Stream sink (verification stub, unit only)
       stream_sink.core
       rtl/stream_sink.sv
       dv/<env + test + cocotb entry + shim>
@@ -61,17 +63,29 @@ plover/                                project root
       dv/axil_xbar_dv_top.sv           DV harness (xbar + 2 RAM stubs)
       dv/axil_ram_stub.sv              behavioural AXI-Lite RAM (DV only)
       dv/<env + test + cocotb entry + shim>
-  top/                              project top — integrates the units above
-    plover.core                        FuseSoC core (depends on all five unit cores)
-    rtl/plover.sv                      top-level integration (single AXI-Lite slave via xbar)
+    cic_decimator/                     CIC decimation filter (Pattern A DV)
+      cic_decimator.core
+      rtl/cic_decimator.sv
+      dv/<test + cocotb entry + shim>
+    cic_interpolator/                  CIC interpolation filter (Pattern A DV)
+      cic_interpolator.core
+      rtl/cic_interpolator.sv
+      dv/<test + cocotb entry + shim>
+    fir_filter/                        Direct-form FIR with AXI-Lite coefficient bank
+      fir_filter.core
+      rtl/fir_filter.sv
+      dv/<test + cocotb entry + shim>
+  top/                                 project top — integrates the units above
+    plover.core                        FuseSoC core (depends on all unit cores it integrates)
+    rtl/plover.sv                      AXI-Lite via xbar + CIC -> FIR signal chain
     dv/
-      plover_env.py                    two-agent env (AxiLite + AxiStream) + minimal scoreboard
-      plover_test.py                   three vseqs + base test; firmware bridge composed here
-      test_plover.py                   cocotb entry: smoke, firmware_smoke, firmware_concurrent
+      plover_env.py                    three-agent env (AxiLite + AxiStream-in + AxiStream-out) + DSP-aware scoreboard
+      plover_test.py                   five vseqs + base test; firmware bridge composed here
+      test_plover.py                   cocotb entry: smoke + firmware_* + chain_*
       test_plover_pytest.py            pytest shim over tools/dv_harness.py
       firmware_bridge.py               ctypes loader + cocotb bridge for host/
     host/                              host-side C "firmware" that drives plover via AXI
-      plover_hello.h
+      plover_hello.h                   API: plover_hello_world + plover_program_fir
       plover_hello.c
       Makefile
     syn/                               synthesis scaffolding (vendor-agnostic stubs)
@@ -321,48 +335,64 @@ its own integration testbench, and synthesis scaffolding.
 
 ```
 top/
-  plover.core      FuseSoC core (depends on ::axil_shell, ::counter, ::syscon, ::stream_sink, ::axil_xbar)
-  rtl/plover.sv    structural top: instantiates all sub-units behind one AXI-Lite port
+  plover.core      FuseSoC core (depends on axil_shell + counter + syscon + axil_xbar + cic_decimator + fir_filter)
+  rtl/plover.sv    structural top: AXI-Lite via xbar + DSP signal chain (CIC -> FIR)
   dv/              integration testbench (cocotb + pyuvm)
   host/            host-side C firmware (see next section)
   syn/             synthesis scaffolding (vendor-agnostic — see syn/README.md)
 ```
 
-The top exposes two external bus interfaces:
+The top exposes two external bus interfaces and one inline DSP path:
 
 * `s_axil_*` — AXI4-Lite slave (32-bit address, 32-bit data). The single
   host-facing register bus. The xbar inside the top routes by address:
-  | Range                              | Slave        |
-  | ---------------------------------- | ------------ |
-  | `0x0000_0000` .. `0x0000_0FFF`     | `axil_shell` |
-  | `0x0000_1000` .. `0x0000_1FFF`     | `syscon`     |
-  | anything else                      | DECERR       |
+  | Range                              | Slave         |
+  | ---------------------------------- | ------------- |
+  | `0x0000_0000` .. `0x0000_0FFF`     | `axil_shell`  |
+  | `0x0000_1000` .. `0x0000_1FFF`     | `syscon`      |
+  | `0x0000_2000` .. `0x0000_2FFF`     | `fir_filter`  |
+  | anything else                      | DECERR        |
 
   4 KB pages give each peripheral room to grow without remap. The xbar is
-  a unit at `units/axil_xbar/` with its own DV (see below).
+  a unit at `units/axil_xbar/` with its own DV (see below). The FIR's
+  page hosts its coefficient bank: byte offset `4*i` selects coefficient
+  `i`, so software writes a tap table by walking word-aligned addresses
+  from `0x0000_2000`.
 
-* `s_axis_*` — AXI4-Stream slave routed to `stream_sink` (TDATA[31:0],
-  TVALID, TREADY, TLAST). The sink absorbs every beat without
-  backpressure, counts beats into `sink_beat_count`, and folds TDATA
-  into a running XOR `sink_data_xor` — both exposed as top-level debug
-  outputs.
+* `s_axis_*` — AXI4-Stream slave carrying signed sample data into the
+  CIC decimator (TDATA is `SAMPLE_W`-bit signed, default 16). Standard
+  TVALID/TREADY handshake.
+
+* `m_axis_*` — AXI4-Stream master carrying filtered sample data out of
+  the FIR. Output rate is the input rate divided by `CIC_DECIM` (default
+  4); standard handshake with backpressure that propagates upstream.
+
+The inline DSP signal chain inside the top:
+
+```
+s_axis_* -> cic_decimator (N=3, R=4, M=1) -> fir_filter (8 taps) -> m_axis_*
+```
+
+The FIR's coefficients are hot-updatable from software — writing to the
+FIR page changes the filter's behaviour on the next sample. Coefficients
+default to zero at reset, so software must program a tap set before
+useful samples flow.
 
 `syscon`'s `soft_rst_n` is ANDed with the global `rst_n` to form the
-`counter`'s reset, so a software write to `SOFT_RST.CORE` (at host-visible
-address `0x0000_1008`) holds the counter in reset for the syscon pulse
-width while the AXI endpoints stay alive.
+`counter`'s reset, so a software write to `SOFT_RST.CORE` (at
+host-visible address `0x0000_1008`) holds the counter in reset for the
+syscon pulse width while the AXI endpoints and DSP chain stay alive.
 
-The integration testbench has narrow scope by design: it does not re-verify
-the sub-units (they have their own DV under `units/`) — it only checks that
-the integration is **wired and alive**. Three pyuvm tests live here:
+The integration testbench checks both wiring and DSP correctness. The
+sub-units (axil_shell, syscon, axil_xbar, cic_decimator, fir_filter)
+are unit-verified under `units/`; the top exists to confirm they
+compose. Five pyuvm tests live here:
 
 `smoke`
-: Reads `axil_shell.ID` at `0x0000_000C` and `syscon.VERSION` at
-  `0x0000_1000` via the single AXI master. Writes/reads an unmapped
-  address (`0x0000_2000`) and confirms the xbar returns DECERR.
-  Samples `dut.count` across cycles. Writes `1` to `syscon.SOFT_RST.CORE`,
-  verifies the counter is held at 0 mid-window and has restarted from
-  0 after the soft-reset pulse ends.
+: Reads `axil_shell.ID` and `syscon.VERSION` via the xbar. Writes/reads
+  an unmapped address (`0x0000_4000`) and confirms DECERR. Exercises
+  `CONTROL.ENABLE`'s gating of the counter (held → advancing → frozen
+  → re-enabled), then the syscon soft-reset window.
 
 `firmware_smoke`
 : Same setup, but the *test logic* runs in C from `top/host/` via the
@@ -370,17 +400,46 @@ the integration is **wired and alive**. Three pyuvm tests live here:
   unified bus topology) and the firmware computes absolute addresses
   from host-supplied page bases. See the "Host-side C" section below.
 
-`firmware_concurrent`
-: cocotb pushes AXI-Stream stimulus into `stream_sink` in a background
-  coroutine while the C firmware does its register work. Both stimuli
-  sources are live simultaneously on independent buses; the test asserts
-  the C ran to success AND the sink received the expected pattern, with
-  an extra probe assertion that beats landed *during* the firmware run.
+`firmware_program_fir`
+: The C firmware (`plover_program_fir`) writes a coefficient table to
+  the FIR through the host's AXI-Lite master, reads each tap back to
+  confirm, then the test sequence streams samples through the chain.
+  The DSP-aware scoreboard (described below) checks each output sample
+  bit-exactly against the bit-exact Python chain model — and because
+  the AXI-Lite passive monitor sees the C's coefficient writes as
+  ordinary bus events, the scoreboard's model is kept in lock-step
+  automatically. This is the OpenTitan-style invariant: the scoreboard
+  sees software- and sequencer-driven traffic identically.
 
-Bug injection on any of the wired-up paths (swapping the xbar page bases,
-tying `counter_enable=0`, bypassing `soft_rst_n`, truncating the AXIS
-stimulus, mis-stating an expected register value in the C) makes the
-relevant check fail loudly.
+`chain_impulse`
+: DSP-aware test. Programs the FIR as a delta filter (coef[0] max,
+  rest zero), drives an impulse stream, and the scoreboard verifies
+  the chain output is the bit-exact CIC impulse response.
+
+`chain_tone`
+: DSP-aware test. Programs the FIR as a unity-gain averager, drives a
+  sinusoidal stream (parameterised: frequency, amplitude, length), and
+  the scoreboard verifies the chain output sample-for-sample. The
+  sequence carries signal info (`freq_norm`, `amplitude_frac`,
+  `num_inputs`) — adding more signal types (chirps, noise, multi-tone)
+  is a small addition.
+
+The integration scoreboard is *DSP-aware*: it maintains a `CicFirChain`
+Python reference model (a composition of the verified `CicDecimator`
+and `FirFilter` primitives) and:
+
+1. Watches AXI-Lite monitor for writes to the FIR page → updates the
+   model's coefficient bank in lock-step.
+2. Watches AXIS-in monitor for input samples → feeds them to the model.
+3. Watches AXIS-out monitor for output samples → compares each against
+   the model's prediction.
+
+A bug-injection that tied the CIC→FIR interconnect to zero produced
+"chain scoreboard: 63 mismatch(es); first: idx=0 expected=9 got=0";
+breaking the FIR's AXI-Lite address routing produced "62 mismatch(es)"
+on the same test. The scoreboard catches integration regressions that
+the unit DVs cannot (each unit works in isolation; the chain test
+catches wiring bugs between them).
 
 **Software controls the counter.** `axil_shell.CONTROL.ENABLE` (bit 0
 of register `0x04`) is now plumbed through to `u_counter.enable` in
@@ -480,7 +539,7 @@ compile time. A separate `_Static_assert` in the firmware pins
 `EXPECTED_SHELL_ID` against `AXIL_SHELL__ID__VALUE_reset`, so any RDL
 change that moves the ID value also fails the build, not just the test.
 
-### Two tests live on this stack
+### Two firmware tests live on this stack
 
 `firmware_smoke`
 : The minimum useful check: read the shell ID and the syscon VERSION
@@ -488,17 +547,19 @@ change that moves the ID value also fails the build, not just the test.
   the chain C → Python → cocotb → Verilator → RTL → back works end-to-end.
   Bug-injection on either expected value fails the test loudly.
 
-`firmware_concurrent`
-: cocotb's `AxiStreamSource` pushes a 16-beat pattern into the
-  `stream_sink` unit via `s_axis_*` on a background coroutine
-  (`cocotb.start_soon`) while the C firmware reads its registers on
-  the AXI-Lite path. After both finish, the test asserts the C ran
-  to success AND the sink's `beat_count` matches the expected pattern
-  length with the expected XOR — proving the two stimuli sources were
-  live at the same simulated time on independent buses. The test
-  includes a probe assertion that some beats land *during* the
-  firmware run; if AXIS was somehow being serialized after the C
-  rather than running in parallel, that assertion catches it.
+`firmware_program_fir`
+: The C firmware uses the same single host_ops master to walk a
+  coefficient table and write each tap to the FIR's AXI-Lite bank
+  (`plover_program_fir`). Optionally reads each tap back to confirm
+  the value committed. The cocotb side then streams samples through
+  the chain, and the DSP-aware integration scoreboard (in
+  `plover_env.py`) verifies the chain's output bit-exactly against a
+  Python `CicFirChain` model — automatically, because the scoreboard's
+  AXI-Lite passive monitor sees the C's coefficient writes as ordinary
+  bus events and updates the model in lock-step. Software- and
+  sequencer-driven coefficient programming are indistinguishable to
+  the scoreboard, which is the OpenTitan-style invariant the project's
+  agent design buys.
 
 ### Useful properties
 

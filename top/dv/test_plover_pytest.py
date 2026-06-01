@@ -43,7 +43,8 @@ CFG = HarnessConfig(
     c_include_env="PLOVER_RDL_INCLUDE_DIRS",
     live_dir_map={"plover": PROJ_DIR},
 )
-TESTCASES = ["smoke", "firmware_smoke", "firmware_concurrent"]
+TESTCASES = ["smoke", "firmware_smoke", "firmware_program_fir",
+             "chain_impulse", "chain_tone"]
 
 
 @pytest.mark.parametrize("cocotb_testcase", TESTCASES)

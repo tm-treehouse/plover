@@ -63,6 +63,35 @@ int plover_hello_world(const plover_host_ops* ops,
                        uint32_t syscon_base,
                        uint32_t expected_syscon_version);
 
+/* ----------------------------------------------------------------------
+ * FIR coefficient bank programming.
+ *
+ * Programs the FIR filter's coefficient memory with the caller-supplied
+ * table. Each tap is one 32-bit AXI-Lite write to (fir_base + 4*i); the
+ * FIR's RTL takes the low COEF_W bits and ignores the rest, so passing
+ * a sign-extended signed value is the natural shape.
+ *
+ * Optionally reads each coefficient back via AXI-Lite and verifies the
+ * value matches what was written (cheap end-to-end check that the xbar
+ * routing and the FIR's read path are wired correctly).
+ *
+ * The FIR's bank is *not* RDL-described — it's a memory-style slave, so
+ * there's no generated header for offsets. The byte offset is just
+ * 4*tap_index, which this function computes directly.
+ *
+ * Coefficient updates are hot — the FIR applies them on the next input
+ * sample. Caller is responsible for sequencing relative to the data
+ * stream (e.g. mute the stream while reprogramming, or write all coefs
+ * back-to-back so the transition is brief).
+ *
+ * Returns 0 on success, non-zero on the first failing readback (if
+ * verify_readback != 0). */
+int plover_program_fir(const plover_host_ops* ops,
+                       uint32_t fir_base,
+                       const int32_t* coefs,
+                       uint32_t n_taps,
+                       int verify_readback);
+
 #ifdef __cplusplus
 }
 #endif

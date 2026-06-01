@@ -2,25 +2,32 @@
 // plover.sv — project top
 //
 // Top-level integration of the verified sub-units under units/. Exposes
-// one AXI4-Lite slave port (s_axil_*) and one AXI4-Stream slave port
-// (s_axis_*) plus debug outputs.
+// one AXI4-Lite slave port (s_axil_*) and an AXI4-Stream signal data path
+// (s_axis_*  in, m_axis_*  out) with a CIC-decimator -> FIR filter chain
+// between them. Software-programmable FIR coefficients land at the FIR's
+// AXI-Lite slave port via the xbar.
 //
-// An axil_xbar inside the top fans the single AXI-Lite slave out to the
-// per-unit slaves:
-//
-//   0x0000_0000 .. 0x0000_0FFF  ->  axil_shell  (4 KB page)
-//   0x0000_1000 .. 0x0000_1FFF  ->  syscon      (4 KB page)
-//
+// Address map (axil_xbar):
+//   0x0000_0000 .. 0x0000_0FFF  ->  axil_shell    (4 KB page)
+//   0x0000_1000 .. 0x0000_1FFF  ->  syscon        (4 KB page)
+//   0x0000_2000 .. 0x0000_2FFF  ->  fir_filter    (4 KB page — coef bank)
 // Addresses outside those ranges return AXI DECERR.
 //
-// syscon.soft_rst_n gates the counter's reset: a software write of 1 to
-// SOFT_RST.CORE (offset 0x08 on the syscon page, i.e. 0x0000_1008
-// host-visible) pulses soft_rst_n low for syscon's SOFT_RST_CYCLES (default
-// 8) cycles, which holds the counter in reset for that window. The AXI
-// endpoints stay alive because they're only reset by the global rst_n.
+// DSP signal chain:
+//   s_axis_*  (16-bit signed, IN_RATE) -> cic_decimator(R=4, N=3)
+//                                      -> fir_filter(N_TAPS=8)
+//                                      -> m_axis_*  (16-bit signed, OUT_RATE = IN_RATE/4)
+// FIR coefficients are hot-updatable from software via the xbar.
 //
-// Known limitation, still: axil_shell does not yet expose its CONTROL bits
-// as ports, so the counter's enable/clear are still tied to constants here.
+// syscon.soft_rst_n gates the counter's reset; the chain shares the main
+// rst_n (the AXIS BFMs in DV expect that boundary). On reset the FIR's
+// coefficients clear to zero — software must reprogram before useful
+// output. The integration tests model this in lock-step.
+//
+// CONTROL.ENABLE from axil_shell still gates the legacy free-running
+// counter (kept around as a debug heartbeat). It does not gate the DSP
+// chain — the chain runs whenever samples arrive and coefficients are
+// programmed.
 // =============================================================================
 `timescale 1ns / 1ps
 `default_nettype none
@@ -33,7 +40,18 @@ module plover #(
     parameter logic [31:0]   VERSION_HASH_OVERRIDE = 32'h0,
     // Crossbar register-stage knobs. Default 0 = combinational.
     parameter int unsigned   XBAR_INPUT_REG_STAGES  = 0,
-    parameter int unsigned   XBAR_OUTPUT_REG_STAGES = 0
+    parameter int unsigned   XBAR_OUTPUT_REG_STAGES = 0,
+    // ---- DSP chain parameters ----
+    // CIC decimator: N stages, decimation R, differential delay M.
+    parameter int unsigned   CIC_STAGES = 3,
+    parameter int unsigned   CIC_DECIM  = 4,
+    parameter int unsigned   CIC_DELAY  = 1,
+    // Sample width used end-to-end through the chain.
+    parameter int unsigned   SAMPLE_W   = 16,
+    // FIR: N taps, coefficient width, OUT_SHIFT for output Q-alignment.
+    parameter int unsigned   FIR_N_TAPS    = 8,
+    parameter int unsigned   FIR_COEF_W    = 16,
+    parameter int            FIR_OUT_SHIFT = 15
 ) (
     input  wire                       clk,
     input  wire                       rst_n,
@@ -63,24 +81,45 @@ module plover #(
     output wire                       s_axil_rvalid,
     input  wire                       s_axil_rready,
 
-    // ---- External AXI4-Stream input to stream_sink ----------------------
-    input  wire [31:0]                s_axis_tdata,
+    // ---- DSP chain AXI4-Stream input (slow / pre-decimation samples) ---
+    // Signed SAMPLE_W-bit samples driven into the CIC decimator.
+    input  wire signed [SAMPLE_W-1:0] s_axis_tdata,
     input  wire                       s_axis_tvalid,
     output wire                       s_axis_tready,
-    input  wire                       s_axis_tlast,
+
+    // ---- DSP chain AXI4-Stream output (filtered / decimated samples) ---
+    // Signed SAMPLE_W-bit samples emitted from the FIR.
+    output wire signed [SAMPLE_W-1:0] m_axis_tdata,
+    output wire                       m_axis_tvalid,
+    input  wire                       m_axis_tready,
 
     // ---- Observable outputs (debug / status) ----------------------------
-    output wire [COUNTER_WIDTH-1:0]   count,
-    output wire [31:0]                sink_beat_count,
-    output wire [31:0]                sink_data_xor
+    output wire [COUNTER_WIDTH-1:0]   count
 );
 
     // -----------------------------------------------------------------
     // Constants and small signals.
     // -----------------------------------------------------------------
-    localparam int unsigned N_SLAVES = 2;
+    localparam int unsigned N_SLAVES = 3;
     localparam int unsigned SHELL_IDX  = 0;
     localparam int unsigned SYSCON_IDX = 1;
+    localparam int unsigned FIR_IDX    = 2;
+
+    // Xbar slave page map. Defined as localparams here so the array
+    // size is fixed before u_xbar's parameter binding (works around a
+    // simulator quirk: named array-typed parameters were being
+    // elaboration-checked against the module's default N_SLAVES rather
+    // than the override).
+    localparam logic [31:0] XBAR_SLAVE_BASE [N_SLAVES] = '{
+        32'h0000_0000,  // SHELL_IDX
+        32'h0000_1000,  // SYSCON_IDX
+        32'h0000_2000   // FIR_IDX
+    };
+    localparam logic [31:0] XBAR_SLAVE_MASK [N_SLAVES] = '{
+        32'hFFFF_F000,
+        32'hFFFF_F000,
+        32'hFFFF_F000
+    };
 
     // CONTROL fields driven by axil_shell.
     //   * shell_control_enable drives the counter's enable. Software
@@ -127,8 +166,8 @@ module plover #(
         .DATA_WIDTH        (32),
         .INPUT_REG_STAGES  (XBAR_INPUT_REG_STAGES),
         .OUTPUT_REG_STAGES (XBAR_OUTPUT_REG_STAGES),
-        .SLAVE_BASE        ('{32'h0000_0000, 32'h0000_1000}),
-        .SLAVE_MASK        ('{32'hFFFF_F000, 32'hFFFF_F000})
+        .SLAVE_BASE        (XBAR_SLAVE_BASE),
+        .SLAVE_MASK        (XBAR_SLAVE_MASK)
     ) u_xbar (
         .clk(clk), .rst_n(rst_n),
 
@@ -246,17 +285,78 @@ module plover #(
         .count  (count)
     );
 
-    stream_sink #(
-        .WIDTH(32)
-    ) u_stream_sink (
-        .clk           (clk),
-        .rst_n         (rst_n),
+    // -----------------------------------------------------------------
+    // DSP signal chain: CIC decimator -> FIR
+    //
+    // Sample data flow:
+    //   s_axis_*  (16-bit signed, input rate)
+    //     -> cic_decimator (decim by R, internal pipelining)
+    //     -> intermediate AXIS (16-bit signed, input_rate / R)
+    //     -> fir_filter   (8-tap, software-programmable coefs)
+    //     -> m_axis_*  (16-bit signed, output rate = input rate / R)
+    //
+    // The intermediate AXIS bus between the two units is internal —
+    // testbenches observe the chain's output via m_axis_* and the
+    // input via s_axis_*. Coefficients land at fir_filter via
+    // m_axil_*[FIR_IDX] (xbar slave 2, page 0x0000_2000).
+    // -----------------------------------------------------------------
+
+    // CIC -> FIR intermediate AXIS.
+    wire signed [SAMPLE_W-1:0]    cic2fir_tdata;
+    wire                          cic2fir_tvalid;
+    wire                          cic2fir_tready;
+
+    cic_decimator #(
+        .STAGES (CIC_STAGES),
+        .DECIM  (CIC_DECIM),
+        .DELAY  (CIC_DELAY),
+        .IN_W   (SAMPLE_W),
+        .OUT_W  (SAMPLE_W)
+    ) u_cic_decim (
+        .clk(clk), .rst_n(rst_n),
         .s_axis_tdata  (s_axis_tdata),
         .s_axis_tvalid (s_axis_tvalid),
         .s_axis_tready (s_axis_tready),
-        .s_axis_tlast  (s_axis_tlast),
-        .beat_count    (sink_beat_count),
-        .data_xor      (sink_data_xor)
+        .m_axis_tdata  (cic2fir_tdata),
+        .m_axis_tvalid (cic2fir_tvalid),
+        .m_axis_tready (cic2fir_tready)
+    );
+
+    fir_filter #(
+        .N_TAPS    (FIR_N_TAPS),
+        .IN_W      (SAMPLE_W),
+        .COEF_W    (FIR_COEF_W),
+        .OUT_W     (SAMPLE_W),
+        .OUT_SHIFT (FIR_OUT_SHIFT)
+    ) u_fir (
+        .clk(clk), .rst_n(rst_n),
+        // AXI-Lite coefficient bank (xbar slave FIR_IDX)
+        .s_axil_awaddr (m_axil_awaddr [FIR_IDX*32 +: 32]),
+        .s_axil_awprot (m_axil_awprot [FIR_IDX*3  +: 3]),
+        .s_axil_awvalid(m_axil_awvalid[FIR_IDX]),
+        .s_axil_awready(m_axil_awready[FIR_IDX]),
+        .s_axil_wdata  (m_axil_wdata  [FIR_IDX*32 +: 32]),
+        .s_axil_wstrb  (m_axil_wstrb  [FIR_IDX*4  +: 4]),
+        .s_axil_wvalid (m_axil_wvalid [FIR_IDX]),
+        .s_axil_wready (m_axil_wready [FIR_IDX]),
+        .s_axil_bresp  (m_axil_bresp  [FIR_IDX*2  +: 2]),
+        .s_axil_bvalid (m_axil_bvalid [FIR_IDX]),
+        .s_axil_bready (m_axil_bready [FIR_IDX]),
+        .s_axil_araddr (m_axil_araddr [FIR_IDX*32 +: 32]),
+        .s_axil_arprot (m_axil_arprot [FIR_IDX*3  +: 3]),
+        .s_axil_arvalid(m_axil_arvalid[FIR_IDX]),
+        .s_axil_arready(m_axil_arready[FIR_IDX]),
+        .s_axil_rdata  (m_axil_rdata  [FIR_IDX*32 +: 32]),
+        .s_axil_rresp  (m_axil_rresp  [FIR_IDX*2  +: 2]),
+        .s_axil_rvalid (m_axil_rvalid [FIR_IDX]),
+        .s_axil_rready (m_axil_rready [FIR_IDX]),
+        // Sample AXIS in/out
+        .s_axis_tdata  (cic2fir_tdata),
+        .s_axis_tvalid (cic2fir_tvalid),
+        .s_axis_tready (cic2fir_tready),
+        .m_axis_tdata  (m_axis_tdata),
+        .m_axis_tvalid (m_axis_tvalid),
+        .m_axis_tready (m_axis_tready)
     );
 
 endmodule

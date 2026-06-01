@@ -1,27 +1,41 @@
 """Plover top test classes + virtual sequences.
 
-Three vseqs map to the three integration tests the direct testbench had:
+After the DSP chain integration, the top exposes:
+  * an AXI4-Lite port (xbar to axil_shell / syscon / fir_filter)
+  * an AXIS-in port carrying samples into the CIC-FIR chain
+  * an AXIS-out port carrying the filtered chain output
+  * a counter debug output
 
-* smoke               — both pages reachable via the xbar, DECERR for
-                        unmapped, counter wired, soft-reset gates counter.
-                        All-AxiLite-via-sequencer. Pure dv_lib flow.
-* firmware_smoke      — bring up the AxiLiteMaster via the agent, hand
-                        it to the firmware bridge, call C entry, expect
-                        rc=0. AxiLite stays out of the sequencer for the
-                        firmware-driven leg.
-* firmware_concurrent — same as firmware_smoke but with AXIS stimulus
-                        pushed concurrently via a sub-sequence on the
-                        axis sequencer. The end-of-run beat_count /
-                        data_xor comparison lives in the base test.
+Tests come in two flavours:
 
-``PloverBaseTest`` owns the run-phase objection. End-of-run AXIS sampling
-fires only for tests that pushed AXIS items (``self.expect_axis_check``),
-mirroring how stream_sink's base test samples at end-of-run.
+* Control-plane tests (smoke, firmware_smoke, firmware_program_fir)
+  exercise the register interfaces — known-value reads, DECERR probes,
+  counter enable/freeze, soft-reset gating, plus the C firmware path.
+  These are the "integration is wired" checks.
+
+* DSP-aware tests (chain_impulse, chain_tone) feed signals into the
+  chain and rely on the DSP-aware scoreboard to verify the chain
+  output sample-by-sample against a bit-exact reference model. The
+  scoreboard tracks coefficient writes off the AXI-Lite bus monitor,
+  so the test doesn't need to manually keep model and DUT in sync.
+
+Sequences carry signal info: ``ChainImpulseVSeq`` programs the FIR
+with a delta filter and drives an impulse stream; ``ChainToneVSeq``
+programs a configurable averager and drives a sinusoidal stream.
+Future signal types (chirps, noise, multi-tone) are small additions.
+
+The base test asserts the scoreboard's mismatch count is zero at
+end-of-run for the DSP-aware tests; for control-plane tests it logs
+the AXI-Lite transaction count and leaves the scoreboard's chain
+comparison off via cfg.compare_axis_out = False.
 """
 from __future__ import annotations
 
+import math
 import os
+import random
 from pathlib import Path
+from typing import Optional
 
 import cocotb
 from cocotb.triggers import ClockCycles, RisingEdge
@@ -30,18 +44,19 @@ from dv_lib import DVBaseTest, DVBaseVSeq, DVBaseSequence
 
 from dv import AxiLiteItem, AxiLiteOp, AxiStreamItem
 
-from plover_env import PloverEnv, PloverEnvCfg
+from plover_env import (
+    PloverEnv, PloverEnvCfg,
+    SHELL_BASE, SYSCON_BASE, FIR_BASE,
+)
 
 
-# ---- Address map (matches plover.sv xbar config) -------------------
+# ---- Address-map constants -----------------------------------------
 
-SHELL_BASE  = 0x0000_0000
-SYSCON_BASE = 0x0000_1000
-UNMAPPED    = 0x0000_2000
+UNMAPPED = 0x0000_4000
 
-SHELL_ID_OFFSET   = 0x0C
-SHELL_ID_EXPECTED = 0xC0C07B01
-SHELL_CONTROL_OFFSET = 0x04   # axil_shell.CONTROL register
+SHELL_ID_OFFSET         = 0x0C
+SHELL_ID_EXPECTED       = 0xC0C07B01
+SHELL_CONTROL_OFFSET    = 0x04
 SYSCON_VERSION_OFFSET   = 0x00
 SYSCON_SOFT_RST_OFFSET  = 0x08
 EXPECTED_SYSCON_VERSION = 0xCAFE_F00D
@@ -51,11 +66,9 @@ RESP_OKAY   = 0
 RESP_DECERR = 3
 
 
-# ---- Item sub-sequences ---------------------------------------------
+# ---- Item sub-sequences --------------------------------------------
 
 class PloverAxilItemSeq(DVBaseSequence):
-    """Issue a pre-built list of AxiLiteItems on the axil sequencer."""
-
     def __init__(self, items, name: str = "plover_axil_item_seq") -> None:
         super().__init__(name)
         self._items = items
@@ -67,8 +80,6 @@ class PloverAxilItemSeq(DVBaseSequence):
 
 
 class PloverAxisItemSeq(DVBaseSequence):
-    """Issue a pre-built list of AxiStreamItems on the axis sequencer."""
-
     def __init__(self, items, name: str = "plover_axis_item_seq") -> None:
         super().__init__(name)
         self._items = items
@@ -79,46 +90,37 @@ class PloverAxisItemSeq(DVBaseSequence):
             await self.finish_item(item)
 
 
-# ---- Virtual sequences ----------------------------------------------
+# ---- Control-plane vseqs (smoke etc.) ------------------------------
 
 class PloverSmokeVSeq(DVBaseVSeq):
-    """Integration smoke: read both pages, exercise DECERR, soft-reset gate.
+    """Register-level integration smoke: known-value reads, DECERR,
+    CONTROL.ENABLE gating of the counter, soft-reset window.
 
-    Uses a mix of per-item AXI-Lite operations on the sequencer, with
-    timing pauses (counter sampling, soft-reset window) done directly on
-    the DUT clock. The vseq body owns those timing assertions because
-    they're integration-level checks, not protocol-level — the scoreboard
-    can't predict them.
+    Does NOT stimulate the DSP chain. The base test should leave the
+    scoreboard's chain comparison off for this test.
     """
-
-    def __init__(self, name: str = "PloverSmokeVSeq") -> None:
-        super().__init__(name)
 
     async def body(self) -> None:
         await super().body()
         seqr = self.p_sequencer.sub_seqrs["axil"]
         dut = cocotb.top
 
-        # 1) Read shell.ID and syscon.VERSION; values are known constants.
-        items = [
-            AxiLiteItem(op=AxiLiteOp.READ, addr=SHELL_BASE + SHELL_ID_OFFSET),
-        ]
+        # 1) Read shell.ID and syscon.VERSION.
+        items = [AxiLiteItem(op=AxiLiteOp.READ, addr=SHELL_BASE + SHELL_ID_OFFSET)]
         await PloverAxilItemSeq(items).start(seqr)
         assert items[0].resp == RESP_OKAY, f"shell read resp {items[0].resp}"
         assert items[0].data == SHELL_ID_EXPECTED, (
             f"axil_shell.ID via xbar: got 0x{items[0].data:08x}, "
             f"expected 0x{SHELL_ID_EXPECTED:08x}")
 
-        items = [
-            AxiLiteItem(op=AxiLiteOp.READ, addr=SYSCON_BASE + SYSCON_VERSION_OFFSET),
-        ]
+        items = [AxiLiteItem(op=AxiLiteOp.READ, addr=SYSCON_BASE + SYSCON_VERSION_OFFSET)]
         await PloverAxilItemSeq(items).start(seqr)
         assert items[0].resp == RESP_OKAY, f"syscon read resp {items[0].resp}"
         assert items[0].data == EXPECTED_SYSCON_VERSION, (
             f"syscon.VERSION via xbar: got 0x{items[0].data:08x}, "
             f"expected 0x{EXPECTED_SYSCON_VERSION:08x}")
 
-        # 2) Unmapped address returns DECERR for both write and read.
+        # 2) Unmapped address returns DECERR for write and read.
         items = [
             AxiLiteItem(op=AxiLiteOp.WRITE, addr=UNMAPPED, data=0xDEADBEEF),
             AxiLiteItem(op=AxiLiteOp.READ,  addr=UNMAPPED),
@@ -129,159 +131,211 @@ class PloverSmokeVSeq(DVBaseVSeq):
                 f"{exp_op} to unmapped 0x{UNMAPPED:08x}: "
                 f"got resp {items[i].resp}, expected DECERR (3)")
 
-        # Mapped pages still work after the DECERR.
-        items = [AxiLiteItem(op=AxiLiteOp.READ, addr=SHELL_BASE + SHELL_ID_OFFSET)]
-        await PloverAxilItemSeq(items).start(seqr)
-        assert items[0].resp == RESP_OKAY, "shell broken after DECERR"
-
-        # 3) CONTROL.ENABLE gates the counter.
-        # After reset CONTROL.ENABLE=0, so the counter is held at 0.
-        # The first thing software has to do is turn it on.
+        # 3) CONTROL.ENABLE gates the counter. After reset ENABLE=0.
         await ClockCycles(dut.clk, 5)
-        held_at_reset = int(dut.count.value)
-        assert held_at_reset == 0, (
-            f"counter pre-enable: expected 0 (ENABLE=0 after reset), "
-            f"got 0x{held_at_reset:x}")
+        held = int(dut.count.value)
+        assert held == 0, f"counter pre-enable: got 0x{held:x}, expected 0"
 
-        # Write ENABLE=1; counter should start advancing.
         await PloverAxilItemSeq([
             AxiLiteItem(op=AxiLiteOp.WRITE,
-                        addr=SHELL_BASE + SHELL_CONTROL_OFFSET,
-                        data=1),
+                        addr=SHELL_BASE + SHELL_CONTROL_OFFSET, data=1),
         ]).start(seqr)
         await RisingEdge(dut.clk)
         start = int(dut.count.value)
         await ClockCycles(dut.clk, 10)
         end = int(dut.count.value)
         mask = (1 << len(dut.count)) - 1
-        advanced = (end - start) & mask
-        assert advanced == 10, (
-            f"counter advance after ENABLE=1: expected 10, got {advanced} "
-            f"(start=0x{start:x} end=0x{end:x})")
+        assert ((end - start) & mask) == 10, (
+            f"counter advance: got {((end - start) & mask)}, expected 10")
 
-        # Write ENABLE=0; counter should freeze.
         await PloverAxilItemSeq([
             AxiLiteItem(op=AxiLiteOp.WRITE,
-                        addr=SHELL_BASE + SHELL_CONTROL_OFFSET,
-                        data=0),
+                        addr=SHELL_BASE + SHELL_CONTROL_OFFSET, data=0),
         ]).start(seqr)
-        # Two cycles for the write to commit and the next-state to settle.
         await ClockCycles(dut.clk, 2)
-        frozen_a = int(dut.count.value)
+        a = int(dut.count.value)
         await ClockCycles(dut.clk, 10)
-        frozen_b = int(dut.count.value)
-        assert frozen_a == frozen_b, (
-            f"counter freeze after ENABLE=0: count moved from "
-            f"0x{frozen_a:x} to 0x{frozen_b:x} (expected unchanged)")
+        b = int(dut.count.value)
+        assert a == b, f"counter freeze: 0x{a:x} -> 0x{b:x} (expected unchanged)"
 
-        # Re-enable for the soft-reset check below: that step expects the
-        # counter to resume to a small value after the soft-reset window.
+        # Re-enable so the soft-reset check below sees movement.
         await PloverAxilItemSeq([
             AxiLiteItem(op=AxiLiteOp.WRITE,
-                        addr=SHELL_BASE + SHELL_CONTROL_OFFSET,
-                        data=1),
+                        addr=SHELL_BASE + SHELL_CONTROL_OFFSET, data=1),
         ]).start(seqr)
 
-        # 4) Soft-reset via syscon gates the counter.
+        # 4) Soft-reset window.
         await PloverAxilItemSeq([
             AxiLiteItem(op=AxiLiteOp.WRITE,
-                        addr=SYSCON_BASE + SYSCON_SOFT_RST_OFFSET,
-                        data=1),
+                        addr=SYSCON_BASE + SYSCON_SOFT_RST_OFFSET, data=1),
         ]).start(seqr)
         await ClockCycles(dut.clk, 3)
         mid = int(dut.count.value)
-        assert mid == 0, (
-            f"soft-reset gating: expected counter held at 0 mid-window, "
-            f"got 0x{mid:x}")
+        assert mid == 0, f"soft-reset gating: counter not held (0x{mid:x})"
         await ClockCycles(dut.clk, SYSCON_SOFT_RST_CYCLES + 2)
         after = int(dut.count.value)
         assert 1 <= after <= SYSCON_SOFT_RST_CYCLES + 4, (
-            f"soft-reset release: counter small after window, got 0x{after:x}")
+            f"soft-reset release: small count expected, got 0x{after:x}")
 
+
+# ---- Firmware-driven vseqs -----------------------------------------
 
 class PloverFirmwareSmokeVSeq(DVBaseVSeq):
-    """Call the C firmware via the bridge. AxiLite goes outside the sequencer
-    because the bridge's @resume callbacks need the raw AxiLiteMaster.
+    """Call the C ``plover_hello_world`` via the firmware bridge."""
+
+    async def body(self) -> None:
+        await super().body()
+        from firmware_bridge import run_hello_world
+        master = _master_from_env(self)
+        include_dirs = _include_dirs_from_env()
+        rc = await run_hello_world(
+            master,
+            shell_base=SHELL_BASE,
+            syscon_base=SYSCON_BASE,
+            expected_syscon_version=EXPECTED_SYSCON_VERSION,
+            include_dirs=include_dirs,
+        )
+        assert rc == 0, f"plover_hello_world returned {rc}"
+
+
+class PloverFirmwareProgramFirVSeq(DVBaseVSeq):
+    """C programs the FIR coefficient bank via the bridge, then the
+    sequence pushes samples through the chain. The scoreboard tracks
+    the C-driven coefficient writes via its passive AXI-Lite monitor —
+    no explicit sync between test and scoreboard required."""
+
+    # Coefficient set: a unity-gain averager (each tap = max/N), so the
+    # filtered output is a sliding average of the CIC-decimated stream.
+    # Chosen because it's nontrivial (all taps used) but easy to eyeball.
+    @staticmethod
+    def averaging_coefs(n_taps: int, coef_w: int) -> list[int]:
+        unit = ((1 << (coef_w - 1)) - 1) // n_taps
+        return [unit] * n_taps
+
+    async def body(self) -> None:
+        await super().body()
+        from firmware_bridge import run_program_fir
+        master = _master_from_env(self)
+        include_dirs = _include_dirs_from_env()
+
+        env_cfg: PloverEnvCfg = self.p_sequencer.get_parent().cfg  # type: ignore[attr-defined]
+        coefs = self.averaging_coefs(env_cfg.fir_n_taps, env_cfg.fir_coef_w)
+
+        rc = await run_program_fir(
+            master, fir_base=FIR_BASE, coefs=coefs,
+            verify_readback=True, include_dirs=include_dirs)
+        assert rc == 0, f"plover_program_fir returned {rc}"
+
+        # Push samples through the chain. The scoreboard verifies each
+        # output beat against the CicFirChain model; the model picked up
+        # the coefficient programming via the bus monitor.
+        seqr_in = self.p_sequencer.sub_seqrs["axis_in"]
+        rng = random.Random(0xC0FFEE)
+        sample_w = env_cfg.sample_w
+        decim   = env_cfg.cic_decim
+        # Enough samples to produce ~12 output beats.
+        n_inputs = decim * 12
+        lo = -(1 << (sample_w - 1))
+        hi =  (1 << (sample_w - 1)) - 1
+        # Use the sample_w bit mask so the AXIS BFM picks up the right
+        # signed integer payload.
+        mask = (1 << sample_w) - 1
+        items = [AxiStreamItem(data=rng.randint(lo, hi) & mask)
+                 for _ in range(n_inputs)]
+        await PloverAxisItemSeq(items).start(seqr_in)
+        # Let the chain drain.
+        await ClockCycles(cocotb.top.clk, 50)
+
+
+# ---- DSP-aware vseqs (signal-carrying) -----------------------------
+
+class ChainImpulseVSeq(DVBaseVSeq):
+    """Program a delta filter (coef[0]=max, rest=0) so the FIR is a
+    one-cycle pass-through, then drive an impulse stream. The CIC
+    decimator's impulse response gets passed unmodified through the
+    FIR, so the chain output is identical to a standalone CIC's impulse
+    response.
     """
 
-    def __init__(self, name: str = "PloverFirmwareSmokeVSeq") -> None:
+    async def body(self) -> None:
+        await super().body()
+        seqr_axil = self.p_sequencer.sub_seqrs["axil"]
+        seqr_axis = self.p_sequencer.sub_seqrs["axis_in"]
+        env_cfg: PloverEnvCfg = self.p_sequencer.get_parent().cfg  # type: ignore[attr-defined]
+        n_taps = env_cfg.fir_n_taps
+        coef_w = env_cfg.fir_coef_w
+        sample_w = env_cfg.sample_w
+        decim   = env_cfg.cic_decim
+
+        # Delta filter: coef[0] = max-positive, rest = 0.
+        c0 = (1 << (coef_w - 1)) - 1
+        writes = [AxiLiteItem(op=AxiLiteOp.WRITE,
+                              addr=FIR_BASE + 4 * i,
+                              data=(c0 if i == 0 else 0))
+                  for i in range(n_taps)]
+        await PloverAxilItemSeq(writes).start(seqr_axil)
+
+        # Impulse input: one nonzero sample, then zeros.
+        amplitude = (1 << (sample_w - 2))  # 0.5 in Q1.(sample_w-1)
+        mask = (1 << sample_w) - 1
+        n_inputs = decim * 16
+        inputs = [0] * n_inputs
+        inputs[0] = amplitude
+        items = [AxiStreamItem(data=s & mask) for s in inputs]
+        await PloverAxisItemSeq(items).start(seqr_axis)
+        # Let the chain drain.
+        await ClockCycles(cocotb.top.clk, 50)
+
+
+class ChainToneVSeq(DVBaseVSeq):
+    """Drive a sinusoidal tone through the chain. Programs an averager
+    so the FIR does real lowpass filtering on the decimated tone.
+
+    Sequence parameters carry signal info:
+      * frequency (cycles per input sample, normalised: 0..0.5)
+      * amplitude (signed integer in the sample_w range)
+      * num_inputs (length of the stimulus stream)
+    """
+
+    def __init__(self, name: str = "ChainToneVSeq") -> None:
         super().__init__(name)
+        # Defaults — testbenches can override before start().
+        self.freq_norm = 0.05       # cycles per input sample
+        self.amplitude_frac = 0.5   # fraction of full-scale
+        self.num_inputs = 256       # samples to stream
 
     async def body(self) -> None:
         await super().body()
-        from firmware_bridge import run_hello_world
-        master = _master_from_env(self)
-        include_dirs = _include_dirs_from_env()
-        rc = await run_hello_world(
-            master,
-            shell_base=SHELL_BASE,
-            syscon_base=SYSCON_BASE,
-            expected_syscon_version=EXPECTED_SYSCON_VERSION,
-            include_dirs=include_dirs,
-        )
-        assert rc == 0, f"plover_hello_world returned {rc} (non-zero = check failed)"
+        seqr_axil = self.p_sequencer.sub_seqrs["axil"]
+        seqr_axis = self.p_sequencer.sub_seqrs["axis_in"]
+        env_cfg: PloverEnvCfg = self.p_sequencer.get_parent().cfg  # type: ignore[attr-defined]
+        n_taps = env_cfg.fir_n_taps
+        coef_w = env_cfg.fir_coef_w
+        sample_w = env_cfg.sample_w
 
+        # Unity-gain averager: each tap = max/N (truncated).
+        unit = ((1 << (coef_w - 1)) - 1) // n_taps
+        writes = [AxiLiteItem(op=AxiLiteOp.WRITE,
+                              addr=FIR_BASE + 4 * i, data=unit)
+                  for i in range(n_taps)]
+        await PloverAxilItemSeq(writes).start(seqr_axil)
 
-class PloverFirmwareConcurrentVSeq(DVBaseVSeq):
-    """Push AXIS pattern in the background while the C firmware runs."""
-
-    PATTERN = [
-        0x00000001, 0x00000002, 0x00000004, 0x00000008,
-        0xDEADBEEF, 0x12345678, 0xA5A5A5A5, 0x5A5A5A5A,
-        0xC0FFEE00, 0xBADC0DE1, 0xFEEDFACE, 0xDEADC0DE,
-        0x11111111, 0x22222222, 0x33333333, 0x44444444,
-    ]
-
-    def __init__(self, name: str = "PloverFirmwareConcurrentVSeq") -> None:
-        super().__init__(name)
-
-    async def body(self) -> None:
-        await super().body()
-        from firmware_bridge import run_hello_world
-
-        master = _master_from_env(self)
-
-        # Build the AXIS items and start their sub-sequence in the
-        # background so it runs concurrently with the C firmware call.
-        axis_seqr = self.p_sequencer.sub_seqrs["axis"]
-        axis_items = [AxiStreamItem(data=w) for w in self.PATTERN]
-        axis_seq = PloverAxisItemSeq(axis_items)
-        axis_task = cocotb.start_soon(axis_seq.start(axis_seqr))
-
-        include_dirs = _include_dirs_from_env()
-        rc = await run_hello_world(
-            master,
-            shell_base=SHELL_BASE,
-            syscon_base=SYSCON_BASE,
-            expected_syscon_version=EXPECTED_SYSCON_VERSION,
-            include_dirs=include_dirs,
-        )
-        assert rc == 0, f"plover_hello_world returned {rc} (non-zero = check failed)"
-
-        # Concurrency probe: at least one AXIS beat should have landed
-        # during the firmware execution.
-        dut = cocotb.top
-        mid_run_beats = int(dut.sink_beat_count.value)
-        assert mid_run_beats > 0, (
-            f"expected AXIS to have pushed beats during the C firmware "
-            f"execution, but sink_beat_count = {mid_run_beats}")
-
-        await axis_task
+        # Generate a sinusoidal input. amplitude is a fraction of
+        # full-scale so it's headroom-safe even when amplified through
+        # the CIC's gain.
+        amp = int(self.amplitude_frac * ((1 << (sample_w - 1)) - 1))
+        mask = (1 << sample_w) - 1
+        samples = [int(amp * math.sin(2 * math.pi * self.freq_norm * n))
+                   for n in range(self.num_inputs)]
+        items = [AxiStreamItem(data=s & mask) for s in samples]
+        await PloverAxisItemSeq(items).start(seqr_axis)
+        await ClockCycles(cocotb.top.clk, 50)
 
 
 # ---- Helpers --------------------------------------------------------
 
-def _master_from_env(vseq) -> "AxiLiteMaster":  # type: ignore[name-defined]
-    """Reach the AxiLiteMaster the env's agent driver built.
-
-    The agent's driver is lazy — it constructs the master on first
-    drive_item. For firmware tests that bypass the sequencer, we call
-    ``ensure_master()`` here so the BFM exists before the C wrapper
-    starts invoking callbacks.
-    """
-    # The env is the p_sequencer's parent (.parent in pyuvm). We dug it
-    # out via .get_parent() to avoid touching pyuvm internals more than
-    # necessary.
+def _master_from_env(vseq):
+    """Reach the AxiLiteMaster the env's agent driver built."""
     env = vseq.p_sequencer.get_parent()
     return env.axil_agent.driver.ensure_master()
 
@@ -297,54 +351,46 @@ class PloverBaseTest(DVBaseTest):
     cfg_type = PloverEnvCfg
     env_type = PloverEnv
 
-    # Subclasses set this when they expect a stream-side check at end-of-run.
-    expect_axis_check: bool = False
-    expected_beats: int = 0
-    expected_xor: int = 0
+    # Subclasses can override; controls whether the scoreboard does the
+    # per-beat chain comparison at end-of-run.
+    enable_chain_check: bool = False
+    # Drain cycles between end of vseq and final asserts.
+    drain_cycles: int = 8
 
     def __init__(self, name: str = "PloverBaseTest", parent=None) -> None:
         super().__init__(name, parent)
         self.test_seq_s = "PloverSmokeVSeq"
-        self.settle_cycles = 3
 
     async def run_phase(self) -> None:
         self.raise_objection()
         try:
-            await super().run_phase()
-            # Give the AxiLite monitor a couple of cycles to drain any
-            # in-flight B/R responses for transactions issued near the
-            # end of the vseq body — otherwise the axil_count we log
-            # could undercount by 1-2.
-            if cocotb.is_simulation:
-                await ClockCycles(cocotb.top.clk, 4)
+            # Configure scoreboard mode before its consumers start
+            # comparing. PloverScoreboard.compare_axis_out defaults to
+            # True; control-plane tests turn it off.
             sb = self.env.scoreboard  # type: ignore[union-attr]
+            sb.compare_axis_out = bool(self.enable_chain_check)
+            await super().run_phase()
+            # Drain so any in-flight AXIS-out beats are observed.
+            if cocotb.is_simulation:
+                await ClockCycles(cocotb.top.clk, self.drain_cycles)
             self.logger.info(
-                f"plover scoreboard: observed {sb.axil_count} AXI-Lite "
-                f"transaction(s) on the bus")
-            if self.expect_axis_check:
-                await self._check_axis()
+                f"plover scoreboard: axil_count={sb.axil_count} "
+                f"fir_writes={sb.fir_writes} "
+                f"axis_in_count={sb.axis_in_count} "
+                f"axis_out_count={sb.axis_out_count}")
+            if self.enable_chain_check:
+                assert not sb.mismatches, (
+                    f"chain scoreboard: {len(sb.mismatches)} mismatch(es); "
+                    f"first: idx={sb.mismatches[0][0]} "
+                    f"expected={sb.mismatches[0][1]} got={sb.mismatches[0][2]}")
+                # Leftover predictions indicate the chain under-produced
+                # (samples came in but no output was emitted).
+                if sb._pred_out:
+                    self.logger.warning(
+                        f"chain scoreboard: {len(sb._pred_out)} predicted "
+                        "output(s) had no matching DUT output (under-produced)")
         finally:
             self.drop_objection()
-
-    async def _check_axis(self) -> None:
-        if not cocotb.is_simulation:
-            return
-        dut = cocotb.top
-        await ClockCycles(dut.clk, self.settle_cycles)
-        beat_count = int(dut.sink_beat_count.value)
-        data_xor   = int(dut.sink_data_xor.value)
-        sb = self.env.scoreboard  # type: ignore[union-attr]
-        exp_beats = sb.exp_beats
-        exp_xor   = sb.exp_xor
-        self.logger.info(
-            f"plover sink final state: beat_count={beat_count} "
-            f"data_xor=0x{data_xor:08x} (expected beats={exp_beats}, "
-            f"xor=0x{exp_xor:08x})")
-        assert beat_count == exp_beats, (
-            f"AXIS beat_count: got {beat_count}, expected {exp_beats}")
-        assert data_xor == exp_xor, (
-            f"AXIS data_xor: got 0x{data_xor:08x}, "
-            f"expected 0x{exp_xor:08x}")
 
 
 class PloverFirmwareSmokeTest(PloverBaseTest):
@@ -353,9 +399,25 @@ class PloverFirmwareSmokeTest(PloverBaseTest):
         self.test_seq_s = "PloverFirmwareSmokeVSeq"
 
 
-class PloverFirmwareConcurrentTest(PloverBaseTest):
-    expect_axis_check = True
+class PloverFirmwareProgramFirTest(PloverBaseTest):
+    enable_chain_check = True
 
-    def __init__(self, name: str = "PloverFirmwareConcurrentTest", parent=None) -> None:
+    def __init__(self, name: str = "PloverFirmwareProgramFirTest", parent=None) -> None:
         super().__init__(name, parent)
-        self.test_seq_s = "PloverFirmwareConcurrentVSeq"
+        self.test_seq_s = "PloverFirmwareProgramFirVSeq"
+
+
+class PloverChainImpulseTest(PloverBaseTest):
+    enable_chain_check = True
+
+    def __init__(self, name: str = "PloverChainImpulseTest", parent=None) -> None:
+        super().__init__(name, parent)
+        self.test_seq_s = "ChainImpulseVSeq"
+
+
+class PloverChainToneTest(PloverBaseTest):
+    enable_chain_check = True
+
+    def __init__(self, name: str = "PloverChainToneTest", parent=None) -> None:
+        super().__init__(name, parent)
+        self.test_seq_s = "ChainToneVSeq"

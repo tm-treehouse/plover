@@ -2,10 +2,11 @@ CAPI=2:
 # FuseSoC core for the project top.
 #
 # Depends on the unit cores under units/ so FuseSoC resolves the full source
-# list (top integration + axil_shell + counter + syscon) into one design.
+# list (top integration + axil_shell + counter + syscon + axil_xbar + the
+# DSP signal chain: cic_decimator + fir_filter) into one design.
 
 name: ::plover:0.1.0
-description: Plover project top (integration of axil_shell + counter + syscon + stream_sink + axil_xbar)
+description: Plover project top (axil_shell + syscon + axil_xbar + CIC-FIR signal chain)
 
 filesets:
   rtl:
@@ -16,8 +17,9 @@ filesets:
       - ::axil_shell
       - ::counter
       - ::syscon
-      - ::stream_sink
       - ::axil_xbar
+      - ::cic_decimator
+      - ::fir_filter
 
 targets:
   default:

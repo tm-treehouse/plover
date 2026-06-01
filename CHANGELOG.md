@@ -7,6 +7,90 @@ to follow semantic versioning.
 ## [Unreleased]
 
 ### Added
+- **CIC -> FIR signal chain integrated into `plover.sv`.** The DSP
+  units verified standalone in the previous arc now form an inline
+  signal chain at the project top:
+
+      s_axis_* (16-bit signed, in rate)
+        -> cic_decimator (N=3, R=4, M=1)
+        -> fir_filter   (8 taps, hot-update via AXI-Lite)
+        -> m_axis_* (16-bit signed, out rate = in / R)
+
+  `stream_sink` is no longer instantiated at the top — its `s_axis_*`
+  port is repurposed as the chain input, and a new `m_axis_*` port
+  carries the chain output. The xbar gains a third slave: `fir_filter`
+  at page `0x0000_2000`, hosting the coefficient bank (byte offset
+  `4*i` selects tap `i`). The `stream_sink` unit itself stays in
+  `units/` as a verified-but-no-longer-used template; its unit DV
+  still runs.
+
+- **`CicFirChain` system-level Python reference model in
+  `dv/dsp_models.py`.** Composes the existing `CicDecimator` +
+  `FirFilter` primitives sample-by-sample; same bit-exactness contract
+  as the underlying models. The integration scoreboard uses this as
+  the chain's ground truth: predict per input sample, compare per
+  output sample.
+
+- **DSP-aware scoreboard in `top/dv/plover_env.py`.** Maintains a
+  `CicFirChain` model and keeps it in lock-step with the RTL via three
+  bus-observation streams:
+  1. AXI-Lite monitor → watches writes to the FIR page, forwards them
+     to `model.set_coef()`. Works for sequencer-driven AND
+     C-firmware-driven coefficient updates equally — the passive bus
+     monitor sees both as ordinary bus events. This is the
+     OpenTitan-style invariant the project's agent design buys.
+  2. AXIS-in monitor → feeds each observed input sample to
+     `model.step()`, queuing the model's predicted outputs.
+  3. AXIS-out monitor → compares each observed chain output against
+     the next queued prediction. Mismatches are logged with
+     index/expected/got; end-of-test assertion is `len(mismatches) == 0`.
+
+- **`AxiStreamAgent` is now role-aware (source / sink).** New
+  `cfg.role` field — default `"source"` (drives `tvalid/tdata`),
+  alternative `"sink"` (instantiates a cocotbext-axi `AxiStreamSink`
+  that drives `tready=1` so the DUT's master AXIS port can transfer
+  beats). Needed for the chain's `m_axis_*` output port; the sink
+  BFM is built in `start_of_simulation_phase` so `tready` is asserted
+  from `t=0`. Backward-compatible: existing tests that don't set
+  `role` default to `"source"` and behave as before.
+
+- **`plover_program_fir` C firmware function** in `top/host/`,
+  reachable via the firmware bridge's new `run_program_fir`. Walks a
+  caller-supplied coefficient table and writes each tap to
+  `fir_base + 4*i`; optionally reads each tap back to confirm. The C
+  is standalone — no peakrdl-generated headers (the FIR's bank is
+  memory-style, not RDL-described). Used by the
+  `firmware_program_fir` integration test that programs an averaging
+  filter from C and confirms the chain output bit-exactly.
+
+- **DSP-aware top tests.** Two new "signal-carrying" tests:
+  - `chain_impulse` — programs the FIR as a delta filter and drives
+    an impulse stream; scoreboard verifies the chain output is the
+    bit-exact CIC impulse response.
+  - `chain_tone` — programs the FIR as a unity-gain averager and
+    drives a sinusoidal stream parameterised by `freq_norm`,
+    `amplitude_frac`, `num_inputs`. Sequence carries the signal
+    info; adding more signal types (chirp, multi-tone, noise) is a
+    small addition.
+
+  Plus `firmware_program_fir` (the C path version) and an updated
+  `smoke` test that no longer touches the dropped `sink_*` signals.
+  Top test count is now 5 (was 3).
+
+- **FIR address decoding masks the page-base bits.** The standalone
+  FIR's AXI-Lite slave previously used `aw_addr_q[31:2]` as the word
+  index, which worked when the test drove addresses in
+  `[0, N_TAPS*4)` (high bits zero) but failed once the xbar started
+  delivering full bus addresses like `0x0000_2000 + 4*i`. Now masks
+  the captured address to `ADDR_BITS = 2 + ceil(log2(N_TAPS))` bits
+  before decoding. Standalone FIR DV unchanged in behaviour;
+  integration works correctly. Bug-injection confirmed: tying the
+  CIC→FIR data wire to zero produces "63 mismatch(es); first: idx=0
+  expected=9 got=0"; breaking the FIR's address routing produces
+  "62 mismatch(es)" on `chain_tone`. The scoreboard catches
+  integration regressions the unit DVs cannot (each unit works in
+  isolation; the chain test catches wiring bugs between them).
+
 - **`axil_shell.CONTROL` bits exposed as ports + integration use.**
   `axil_shell` now drives two new combinational outputs continuously
   from `reg_control`: `control_enable` (bit 0 = `CONTROL.ENABLE`) and

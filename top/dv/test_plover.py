@@ -1,15 +1,24 @@
 """cocotb entry point for the plover top integration testbench.
 
-Same shape as the unit testbenches: a small mixin wires the live DUT
-handle + ClkRstIf into the env cfg in ``build_phase``, then defers to
-the dv_lib base. Three pyuvm tests:
+After the DSP chain integration, the top exposes:
+  * an AXI4-Lite host port (xbar fans to axil_shell / syscon / fir_filter)
+  * an AXIS-in port carrying samples into the CIC-FIR chain
+  * an AXIS-out port carrying the filtered chain output
+  * a counter debug output
 
-* ``smoke``               -> PloverSmokeVSeq
-* ``firmware_smoke``      -> PloverFirmwareSmokeVSeq
-* ``firmware_concurrent`` -> PloverFirmwareConcurrentVSeq
+The mixin wires the live DUT handle + ClkRstIf into the env cfg in
+``build_phase``, then defers to the dv_lib base. Five pyuvm tests:
 
-Per-test settable bits (``test_seq_s``, ``expect_axis_check``,
-``settle_cycles``) live on PloverBaseTest and its subclasses in
+* ``smoke``                — control-plane: register reads, DECERR,
+                              CONTROL.ENABLE gating, soft-reset
+* ``firmware_smoke``       — C plover_hello_world via the firmware bridge
+* ``firmware_program_fir`` — C programs FIR coefs, then samples flow
+                              through the chain; scoreboard verifies
+* ``chain_impulse``        — DSP-aware: delta filter + impulse stream
+* ``chain_tone``           — DSP-aware: averager + sinusoidal stream
+
+Per-test settable bits (``test_seq_s``, ``enable_chain_check``,
+``drain_cycles``) live on PloverBaseTest and its subclasses in
 plover_test.py.
 
 VERSION_OVERRIDE / VERSION_HASH_OVERRIDE come into the DUT via the
@@ -26,13 +35,15 @@ from dv_lib import ClkRstIf
 
 from plover_env import PloverEnvCfg
 from plover_test import (
-    PloverBaseTest, PloverFirmwareSmokeTest, PloverFirmwareConcurrentTest,
+    PloverBaseTest,
+    PloverFirmwareSmokeTest,
+    PloverFirmwareProgramFirTest,
+    PloverChainImpulseTest,
+    PloverChainToneTest,
 )
 import plover_test  # noqa: F401  -- registers vseqs by name
 
 CLK_PERIOD_NS = 10
-AXIL_PREFIX = "s_axil"
-AXIS_PREFIX = "s_axis"
 
 
 class _CfgWiringMixin:
@@ -41,13 +52,8 @@ class _CfgWiringMixin:
         cfg = PloverEnvCfg("plover_env_cfg")
         cfg.initialize()
         cfg.vif = dut
-        assert cfg.axil_agent_cfg is not None
-        assert cfg.axis_agent_cfg is not None
-        cfg.axil_agent_cfg.vif = dut
-        cfg.axil_agent_cfg.prefix = AXIL_PREFIX
-        cfg.axis_agent_cfg.vif = dut
-        cfg.axis_agent_cfg.prefix = AXIS_PREFIX
-
+        # The env's build_phase propagates vif and prefixes to each
+        # agent cfg; nothing else to wire here.
         cfg.clk_rst_vif = ClkRstIf(dut.clk, dut.rst_n,
                                    period_ns=CLK_PERIOD_NS,
                                    reset_active_low=True)
@@ -68,5 +74,15 @@ class firmware_smoke(_CfgWiringMixin, PloverFirmwareSmokeTest):
 
 
 @pyuvm.test()
-class firmware_concurrent(_CfgWiringMixin, PloverFirmwareConcurrentTest):
+class firmware_program_fir(_CfgWiringMixin, PloverFirmwareProgramFirTest):
+    pass
+
+
+@pyuvm.test()
+class chain_impulse(_CfgWiringMixin, PloverChainImpulseTest):
+    pass
+
+
+@pyuvm.test()
+class chain_tone(_CfgWiringMixin, PloverChainToneTest):
     pass

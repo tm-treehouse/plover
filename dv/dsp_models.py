@@ -339,3 +339,89 @@ class FirFilter:
 
     def run(self, samples: list[int]) -> list[int]:
         return [self.step(s) for s in samples]
+
+
+# ----------------------------------------------------------------------
+# System-level chain models
+# ----------------------------------------------------------------------
+
+class CicFirChain:
+    """Bit-exact reference for the integrated CIC-decimator -> FIR chain
+    used inside ``plover.sv``.
+
+    Composition rather than reimplementation: this wraps a
+    :class:`CicDecimator` followed by a :class:`FirFilter` and chains
+    them sample-by-sample. The CIC produces one output every R inputs;
+    those outputs feed the FIR one-for-one. So pushing N input samples
+    yields ``N // R`` FIR output samples (modulo the FIR's own one-cycle
+    pipeline fill, which is exactly mirrored in the RTL).
+
+    The FIR's coefficient bank is hot-updatable via :meth:`set_coef`; the
+    test wraps an AXI-Lite write to the FIR base in software and calls
+    :meth:`set_coef` on the model in lock-step so both stay in sync.
+
+    Why a system-level model is its own class:
+        * The chain's output is what the testbench actually sees on the
+          top-level AXIS output port. Composing the two primitives here
+          means tests don't have to reach into the chain's intermediate
+          signals to predict — they just compare the model's chain
+          output against the RTL's chain output.
+        * The bit-exactness contract is inherited: each primitive is
+          bit-exact against its RTL, so the chain is bit-exact against
+          its RTL.
+        * Future system-level scoreboards can ask one object for "what
+          should the chain produce given these inputs and this coef
+          set?" — same shape as a register-level scoreboard's
+          ``predict()`` for the control units.
+    """
+
+    def __init__(self,
+                 cic_stages: int = 3,
+                 cic_decim:  int = 4,
+                 cic_delay:  int = 1,
+                 cic_in_w:   int = 16,
+                 cic_out_w:  int = 16,
+                 fir_n_taps: int = 8,
+                 fir_in_w:   int | None = None,
+                 fir_coef_w: int = 16,
+                 fir_out_w:  int = 16,
+                 fir_out_shift: int | None = None) -> None:
+        if fir_in_w is None:
+            fir_in_w = cic_out_w
+        if fir_out_shift is None:
+            fir_out_shift = fir_coef_w - 1
+        assert fir_in_w == cic_out_w, (
+            f"chain stage widths must match: CIC output is {cic_out_w} bits, "
+            f"FIR input declared {fir_in_w} bits")
+        self.cic = CicDecimator(stages=cic_stages, decim=cic_decim,
+                                delay=cic_delay, in_w=cic_in_w, out_w=cic_out_w)
+        self.fir = FirFilter(n_taps=fir_n_taps, in_w=fir_in_w,
+                             coef_w=fir_coef_w, out_w=fir_out_w,
+                             out_shift=fir_out_shift)
+
+    # ---- Coefficient bank (proxy to the underlying FIR) ----
+    def set_coef(self, index: int, value: int) -> None:
+        self.fir.set_coef(index, value)
+
+    def get_coef(self, index: int) -> int:
+        return self.fir.get_coef(index)
+
+    # ---- Step / run ----
+    def step(self, sample: int) -> int | None:
+        """Push one input sample at the chain input rate. Returns the
+        chain's output sample on cycles where the CIC produces (i.e.
+        every R inputs); ``None`` otherwise."""
+        cic_out = self.cic.step(sample)
+        if cic_out is None:
+            return None
+        return self.fir.step(cic_out)
+
+    def run(self, samples: list[int]) -> list[int]:
+        """Convenience: feed a list of input samples, return the list
+        of chain-output samples (one output per R inputs)."""
+        out = []
+        for s in samples:
+            r = self.step(s)
+            if r is not None:
+                out.append(r)
+        return out

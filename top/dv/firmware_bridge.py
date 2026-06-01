@@ -96,6 +96,19 @@ def _load(include_dirs: list[Path] | None = None) -> ctypes.CDLL:
         ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
     ]
     lib.plover_hello_world.restype = ctypes.c_int
+    # int plover_program_fir(const plover_host_ops* ops,
+    #                        uint32_t fir_base,
+    #                        const int32_t* coefs,
+    #                        uint32_t n_taps,
+    #                        int verify_readback)
+    lib.plover_program_fir.argtypes = [
+        ctypes.POINTER(_HostOps),
+        ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_int32),
+        ctypes.c_uint32,
+        ctypes.c_int,
+    ]
+    lib.plover_program_fir.restype = ctypes.c_int
     return lib
 
 
@@ -175,4 +188,49 @@ async def run_hello_world(host: AxiLiteMaster, *,
         lib, ctypes.byref(ops),
         shell_base, syscon_base,
         expected_syscon_version)
+    return rc
+
+
+@bridge
+def _call_program_fir(lib, ops_ptr, fir_base: int,
+                      coefs_ptr, n_taps: int, verify: int) -> int:
+    """Sync wrapper around plover_program_fir. Same bridge dance as
+    _call_hello_world — every read/write inside the C blocks here while
+    cocotb services the bus."""
+    return int(lib.plover_program_fir(
+        ops_ptr,
+        ctypes.c_uint32(fir_base),
+        coefs_ptr,
+        ctypes.c_uint32(n_taps),
+        ctypes.c_int(verify)))
+
+
+async def run_program_fir(host: AxiLiteMaster, *,
+                          fir_base: int,
+                          coefs: list[int],
+                          verify_readback: bool = True,
+                          include_dirs: list[Path] | None = None) -> int:
+    """Program the FIR coefficient bank via the C firmware.
+
+    ``coefs`` is a Python list of signed ints (the test side already
+    knows the coefficient widths and Q-format; this layer just hands
+    them to the C, which writes them word-for-word). The FIR's RTL
+    truncates each write to its COEF_W bits.
+
+    Returns the C return code (0 on success; for non-zero see
+    plover_program_fir's contract)."""
+    lib = _load(include_dirs)
+    read_cb, write_cb, log_cb = _make_callbacks(host)
+    ops = _HostOps(
+        read  = _ReadFn(read_cb),
+        write = _WriteFn(write_cb),
+        log   = _LogFn(log_cb),
+    )
+
+    n = len(coefs)
+    coef_arr = (ctypes.c_int32 * n)(*[int(c) for c in coefs])
+    rc = await _call_program_fir(
+        lib, ctypes.byref(ops),
+        fir_base, coef_arr, n,
+        1 if verify_readback else 0)
     return rc
