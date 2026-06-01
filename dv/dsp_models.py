@@ -330,11 +330,16 @@ class FirFilter:
         # ACCUM_W bits" so we honour it.
         accum = _signed_wrap(accum, self.ACCUM_W)
 
-        # Right-shift by OUT_SHIFT (drops LSBs to bring binary point back
-        # to the input's Q position), then take top OUT_W bits.
+        # Right-shift by OUT_SHIFT (drops LSBs to bring binary point
+        # back to the input's Q position), then take the LOW OUT_W
+        # bits of the result. The low OUT_W bits after the shift hold
+        # bits [OUT_SHIFT+OUT_W-1 : OUT_SHIFT] of the original
+        # accumulator — so in effect OUT_W consecutive bits are
+        # extracted starting at bit OUT_SHIFT.
         shifted = accum >> self.OUT_SHIFT
-        # Truncate to OUT_W (top bits of what's left after the shift).
-        # Match RTL: result = shifted[OUT_W-1:0] interpreted as signed.
+        # _signed_wrap takes the low OUT_W bits and interprets as
+        # signed — matches the RTL's shifted[OUT_W-1:0]. Plain
+        # truncation; no saturation, no rounding.
         return _signed_wrap(shifted, self.OUT_W)
 
     def run(self, samples: list[int]) -> list[int]:

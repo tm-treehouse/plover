@@ -21,8 +21,16 @@
 // * OUT_SHIFT  — right-shift before output truncation, defaults to
 //                COEF_W-1 (preserves the input's Q-position when
 //                coefficients are Q1.(COEF_W-1))
-// * OUT_W      — output width; top OUT_W bits of the shifted accumulator.
-//                Plain truncation; no saturation or rounding.
+// * OUT_W      — output width. Output formation: arithmetic right shift
+//                accum by OUT_SHIFT, then take the LOW OUT_W bits of the
+//                shifted value (i.e. shifted[OUT_W-1:0]). Plain
+//                truncation: no saturation, no rounding. After the
+//                right shift, the low OUT_W bits hold bits
+//                [OUT_SHIFT+OUT_W-1 : OUT_SHIFT] of the original
+//                accumulator — so in *effect* OUT_W consecutive bits
+//                are extracted starting at bit OUT_SHIFT. For the
+//                default OUT_SHIFT=COEF_W-1 with Q1.(COEF_W-1)
+//                coefficients, this preserves the input's Q-position.
 //
 // AXI-Lite coefficient bank
 // -------------------------
@@ -155,7 +163,11 @@ module fir_filter #(
     wire signed [ACCUM_W-1:0] accum = sum_products();
 
     // Output formation: arithmetic shift right by OUT_SHIFT, then take
-    // top OUT_W bits (truncation).
+    // the LOW OUT_W bits of the shifted value (i.e. shifted[OUT_W-1:0]).
+    // These low bits hold the OUT_W consecutive bits of the original
+    // accumulator starting at bit OUT_SHIFT — see header comment for
+    // why this is the Q-preserving choice. Plain truncation; no
+    // saturation or rounding.
     wire signed [ACCUM_W-1:0] shifted = accum >>> OUT_SHIFT;
     wire signed [OUT_W-1:0]   sample_out_now = shifted[OUT_W-1:0];
 

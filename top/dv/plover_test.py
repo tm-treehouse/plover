@@ -244,7 +244,7 @@ class PloverFirmwareProgramFirVSeq(DVBaseVSeq):
                  for _ in range(n_inputs)]
         await PloverAxisItemSeq(items).start(seqr_in)
         # Let the chain drain.
-        await ClockCycles(cocotb.top.clk, 50)
+        await ClockCycles(cocotb.top.clk, 200)
 
 
 # ---- DSP-aware vseqs (signal-carrying) -----------------------------
@@ -284,7 +284,7 @@ class ChainImpulseVSeq(DVBaseVSeq):
         items = [AxiStreamItem(data=s & mask) for s in inputs]
         await PloverAxisItemSeq(items).start(seqr_axis)
         # Let the chain drain.
-        await ClockCycles(cocotb.top.clk, 50)
+        await ClockCycles(cocotb.top.clk, 200)
 
 
 class ChainToneVSeq(DVBaseVSeq):
@@ -329,7 +329,7 @@ class ChainToneVSeq(DVBaseVSeq):
                    for n in range(self.num_inputs)]
         items = [AxiStreamItem(data=s & mask) for s in samples]
         await PloverAxisItemSeq(items).start(seqr_axis)
-        await ClockCycles(cocotb.top.clk, 50)
+        await ClockCycles(cocotb.top.clk, 200)
 
 
 # ---- Helpers --------------------------------------------------------
