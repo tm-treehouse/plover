@@ -34,6 +34,7 @@ from __future__ import annotations
 import math
 import os
 import random
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -48,6 +49,15 @@ from plover_env import (
     PloverEnv, PloverEnvCfg,
     SHELL_BASE, SYSCON_BASE, FIR_BASE,
 )
+
+# Bring the dsp_plot helper into scope so DSP-aware tests can write a
+# top-level HDL-vs-model comparison PNG at end of run, same shape as the
+# per-unit plots under build/dsp_plots/.
+_HERE = Path(__file__).resolve().parent
+_ROOT = _HERE.parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+from dv.dsp_plot import plot_test_result  # noqa: E402
 
 
 # ---- Address-map constants -----------------------------------------
@@ -356,10 +366,50 @@ class PloverBaseTest(DVBaseTest):
     enable_chain_check: bool = False
     # Drain cycles between end of vseq and final asserts.
     drain_cycles: int = 8
+    # Plot filename slug used when enable_chain_check is True. Subclasses
+    # override per-test so each plot lands at a distinct path under
+    # build/dsp_plots/. Default falls back to the UVM component name so
+    # an unconfigured subclass still produces *something* useful.
+    plot_name: str = "plover_top"
 
     def __init__(self, name: str = "PloverBaseTest", parent=None) -> None:
         super().__init__(name, parent)
         self.test_seq_s = "PloverSmokeVSeq"
+
+    def _plot_chain(self) -> None:
+        """Write a three-panel HDL-vs-model comparison PNG. Same shape
+        as the unit-level DSP plots, but composed from the scoreboard's
+        recorded observation traces: inputs from AXIS-in, expected
+        from the CicFirChain model, got from AXIS-out.
+
+        Plot is best-effort — it never fails the test. matplotlib
+        unavailable (or any plot helper exception) just skips the
+        write."""
+        sb = self.env.scoreboard  # type: ignore[union-attr]
+        cfg: PloverEnvCfg = self.env.cfg  # type: ignore[union-attr]
+        try:
+            title = (
+                f"plover top {self.plot_name}: "
+                f"CIC N={cfg.cic_stages} R={cfg.cic_decim} M={cfg.cic_delay}, "
+                f"FIR N_TAPS={cfg.fir_n_taps}, "
+                f"COEF_W={cfg.fir_coef_w}, SAMPLE_W={cfg.sample_w}")
+            path = plot_test_result(
+                filename=f"plover_top__{self.plot_name}",
+                title=title,
+                inputs=sb.observed_inputs,
+                expected=sb.predicted_outputs,
+                got=sb.observed_outputs,
+                # Input rate is CIC_DECIM times the output rate, so
+                # scale the input x-axis by 1/R for visual alignment
+                # with the output traces — same convention as the
+                # unit cic_decimator plots.
+                input_rate_ratio=1.0 / max(cfg.cic_decim, 1),
+                output_label="chain output (CIC -> FIR)",
+            )
+            if path is not None:
+                self.logger.info(f"chain plot written to {path}")
+        except Exception as ex:  # noqa: BLE001 — never fail the test on plot
+            self.logger.warning(f"chain plot skipped: {ex!r}")
 
     async def run_phase(self) -> None:
         self.raise_objection()
@@ -379,6 +429,10 @@ class PloverBaseTest(DVBaseTest):
                 f"axis_in_count={sb.axis_in_count} "
                 f"axis_out_count={sb.axis_out_count}")
             if self.enable_chain_check:
+                # Write the plot BEFORE asserting, so a failed test
+                # still produces a comparison PNG showing the divergence
+                # — same pattern as the unit-level DSP tests.
+                self._plot_chain()
                 assert not sb.mismatches, (
                     f"chain scoreboard: {len(sb.mismatches)} mismatch(es); "
                     f"first: idx={sb.mismatches[0][0]} "
@@ -401,6 +455,7 @@ class PloverFirmwareSmokeTest(PloverBaseTest):
 
 class PloverFirmwareProgramFirTest(PloverBaseTest):
     enable_chain_check = True
+    plot_name = "firmware_program_fir"
 
     def __init__(self, name: str = "PloverFirmwareProgramFirTest", parent=None) -> None:
         super().__init__(name, parent)
@@ -409,6 +464,7 @@ class PloverFirmwareProgramFirTest(PloverBaseTest):
 
 class PloverChainImpulseTest(PloverBaseTest):
     enable_chain_check = True
+    plot_name = "chain_impulse"
 
     def __init__(self, name: str = "PloverChainImpulseTest", parent=None) -> None:
         super().__init__(name, parent)
@@ -417,6 +473,7 @@ class PloverChainImpulseTest(PloverBaseTest):
 
 class PloverChainToneTest(PloverBaseTest):
     enable_chain_check = True
+    plot_name = "chain_tone"
 
     def __init__(self, name: str = "PloverChainToneTest", parent=None) -> None:
         super().__init__(name, parent)

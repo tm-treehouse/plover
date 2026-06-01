@@ -126,6 +126,20 @@ class PloverScoreboard(DVBaseScoreboard):
         self.axis_in_count = 0
         self.axis_out_count = 0
         self.mismatches: list[tuple[int, int, int]] = []  # (idx, expected, got)
+        # Per-test observation traces, kept for end-of-test plotting.
+        # The scoreboard fills these as samples flow through; the base
+        # test reads them after run_phase completes and hands them to
+        # the dsp_plot helper to produce an HDL-vs-model PNG. Three
+        # lists, all in the scoreboard's signed integer convention:
+        #   * observed_inputs   — every AXIS-in beat (signed sample_w)
+        #   * predicted_outputs — every prediction the model emitted
+        #                          (one per CIC_DECIM inputs)
+        #   * observed_outputs  — every AXIS-out beat
+        # Always recorded (cheap), used by the base test only when
+        # ``enable_chain_check`` and matplotlib is available.
+        self.observed_inputs:   list[int] = []
+        self.predicted_outputs: list[int] = []
+        self.observed_outputs:  list[int] = []
         # Set by the test before run_phase to gate the AXIS-out comparison.
         # When False, samples are still observed and counted but not
         # compared (useful for sub-tests that want to drive samples
@@ -194,11 +208,13 @@ class PloverScoreboard(DVBaseScoreboard):
             item: AxiStreamItem = await self.axis_in_fifo.get()
             self.axis_in_count += 1
             sample = self._signed(item.data, self.sample_w)
+            self.observed_inputs.append(sample)
             if self.model is None:
                 continue
             predicted = self.model.step(sample)
             if predicted is not None:
                 self._pred_out.append(predicted)
+                self.predicted_outputs.append(predicted)
 
     async def _consume_axis_out(self) -> None:
         """Observe output beats. Compare each to the matching prediction.
@@ -214,6 +230,7 @@ class PloverScoreboard(DVBaseScoreboard):
             got = self._signed(item.data, self.sample_w)
             idx = self.axis_out_count
             self.axis_out_count += 1
+            self.observed_outputs.append(got)
             if not self.compare_axis_out:
                 continue
             if not self._pred_out:
