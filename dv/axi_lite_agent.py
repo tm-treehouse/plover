@@ -116,15 +116,17 @@ class AxiLiteDriver(DVBaseDriver):
     def ensure_master(self):
         """Build the underlying ``AxiLiteMaster`` if not yet built; return it.
 
-        Tests that need to talk to the BFM outside the sequencer (e.g.
-        from a firmware bridge in C-thread context) call this once during
-        run_phase to get a handle. For tests that only ever issue items
-        through the sequencer this is a no-op — the driver lazily builds
-        it on its first :meth:`drive_item`.
-        """
-        return self._ensure_master()
+        Lazy because cocotbext-axi's master expects to be constructed in
+        a simulation context (it spawns coroutines on the clock). The
+        first call from the cocotb run_phase builds it; subsequent calls
+        return the same instance.
 
-    def _ensure_master(self):
+        Tests that need to talk to the BFM outside the sequencer (e.g.
+        from a firmware bridge in C-thread context) call this once
+        during run_phase to get a handle. For tests that only issue
+        items through the sequencer it's a no-op — :meth:`drive_item`
+        calls it on first use.
+        """
         if self._master is not None:
             return self._master
         # Imported here so the module imports cleanly with no simulator
@@ -150,7 +152,7 @@ class AxiLiteDriver(DVBaseDriver):
             # right behaviour for plain unit tests of the dv code.
             return
 
-        master = self._ensure_master()
+        master = self.ensure_master()
         byte_lanes = master.write_if.byte_lanes
         if item.op is AxiLiteOp.WRITE:
             data = item.data.to_bytes(byte_lanes, "little")

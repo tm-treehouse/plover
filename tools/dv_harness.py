@@ -28,10 +28,9 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 import pytest
 import yaml

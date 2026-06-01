@@ -16,7 +16,7 @@ top-level shell's agent does.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import cocotb

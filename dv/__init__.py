@@ -34,18 +34,20 @@ Active vs passive mode:
 from dv_lib import UVM_ACTIVE, UVM_PASSIVE
 
 from dv.axi_lite_agent import (
-    AxiLiteOp, AxiLiteItem, AxiLiteAgentCfg, AxiLiteDriver, AxiLiteMonitor,
-    AxiLiteAgent,
+    AxiLiteOp, AxiLiteItem, AxiLiteAgentCfg, AxiLiteAgent,
 )
 from dv.axi_stream_agent import (
-    AxiStreamItem, AxiStreamAgentCfg, AxiStreamDriver, AxiStreamMonitor,
-    AxiStreamAgent,
+    AxiStreamItem, AxiStreamAgentCfg, AxiStreamAgent,
 )
+
+# Driver and Monitor classes (AxiLiteDriver, AxiLiteMonitor,
+# AxiStreamDriver, AxiStreamMonitor) are intentionally NOT re-exported
+# here: nothing in the project imports them directly. The Agent class
+# instantiates them by name lookup. Anyone needing them for a factory
+# override can still import from dv.axi_lite_agent / dv.axi_stream_agent.
 
 __all__ = [
     "UVM_ACTIVE", "UVM_PASSIVE",
-    "AxiLiteOp", "AxiLiteItem", "AxiLiteAgentCfg",
-    "AxiLiteDriver", "AxiLiteMonitor", "AxiLiteAgent",
-    "AxiStreamItem", "AxiStreamAgentCfg",
-    "AxiStreamDriver", "AxiStreamMonitor", "AxiStreamAgent",
+    "AxiLiteOp", "AxiLiteItem", "AxiLiteAgentCfg", "AxiLiteAgent",
+    "AxiStreamItem", "AxiStreamAgentCfg", "AxiStreamAgent",
 ]

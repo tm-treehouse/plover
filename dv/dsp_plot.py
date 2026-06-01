@@ -96,9 +96,9 @@ def plot_test_result(
     n = min(len(expected), len(got))
     x_out = list(range(n))
     axes[1].plot(x_out, expected[:n], ".-", linewidth=1.0, markersize=4,
-                 label=f"reference (Python model)", color="tab:blue", alpha=0.8)
+                 label="reference (Python model)", color="tab:blue", alpha=0.8)
     axes[1].plot(x_out, got[:n], "x--", linewidth=0.8, markersize=4,
-                 label=f"HDL output", color="tab:red", alpha=0.8)
+                 label="HDL output", color="tab:red", alpha=0.8)
     axes[1].set_ylabel("amplitude (int)")
     axes[1].set_title(output_label)
     axes[1].grid(True, alpha=0.3)

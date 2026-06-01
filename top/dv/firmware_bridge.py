@@ -14,7 +14,11 @@ This module:
   callbacks using cocotb 2.x's :func:`cocotb.task.bridge` /
   :func:`cocotb.task.resume`. The C thread blocks on each callback while
   the cocotb event loop services exactly one bus transaction.
-* Exposes :func:`run_hello_world` which the test calls with ``await``.
+* Exposes async entry points the test calls with ``await``:
+    - :func:`run_hello_world` — register-level smoke (shell.ID,
+      syscon.VERSION)
+    - :func:`run_program_fir`  — walks a coefficient table and writes
+      each tap to the FIR's AXI-Lite page; optional readback verify
 
 Why this looks the way it does
 ------------------------------

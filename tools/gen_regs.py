@@ -36,7 +36,6 @@ from pathlib import Path
 
 from systemrdl import RDLCompiler
 from systemrdl.node import FieldNode, RegNode
-from systemrdl.rdltypes import AccessType
 
 
 HEADER = '''"""AUTO-GENERATED from {rdl}. Do not edit by hand.

@@ -36,7 +36,6 @@ import os
 import random
 import sys
 from pathlib import Path
-from typing import Optional
 
 import cocotb
 from cocotb.triggers import ClockCycles, RisingEdge
@@ -77,6 +76,14 @@ RESP_DECERR = 3
 
 
 # ---- Item sub-sequences --------------------------------------------
+
+# ---- Item sub-sequences --------------------------------------------
+# These two are structurally identical (issue items one by one through
+# start_item/finish_item). They're kept as distinct classes rather than
+# unified because each carries a typed default ``name`` matching the
+# sequencer it gets started on — that's what shows up in pyuvm's logs
+# when something fails, and the per-channel name is more useful for
+# debugging than "plover_item_seq" for both.
 
 class PloverAxilItemSeq(DVBaseSequence):
     def __init__(self, items, name: str = "plover_axil_item_seq") -> None:
