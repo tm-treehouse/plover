@@ -88,7 +88,11 @@ class CicDecimator:
     """
 
     def __init__(self, stages: int, decim: int, delay: int = 1,
-                 in_w: int = 16, out_w: int = 16) -> None:
+                 in_w: int = 16, out_w: int = 16,
+                 in_int_w: int | None = None,
+                 in_frac_w: int | None = None,
+                 out_int_w: int | None = None,
+                 out_frac_w: int | None = None) -> None:
         assert stages >= 1
         assert decim >= 1
         assert delay >= 1
@@ -97,6 +101,23 @@ class CicDecimator:
         self.M = delay
         self.IN_W = in_w
         self.OUT_W = out_w
+        # Q-format fields. Default to Q1.(W-1) — matches every existing
+        # test in the repo. Informational only: the model's arithmetic
+        # is integer; these fields exist so tests/scoreboards can
+        # describe the contract without re-deriving it from in_w/out_w.
+        # If either of int_w / frac_w is given, both must be consistent
+        # with the total (in_w/out_w). The default ((W-1) frac, 1 int)
+        # is the typical signed-fractional layout.
+        self.IN_INT_W   = in_int_w   if in_int_w   is not None else 1
+        self.IN_FRAC_W  = in_frac_w  if in_frac_w  is not None else (in_w - self.IN_INT_W)
+        self.OUT_INT_W  = out_int_w  if out_int_w  is not None else 1
+        self.OUT_FRAC_W = out_frac_w if out_frac_w is not None else (out_w - self.OUT_INT_W)
+        assert self.IN_INT_W  + self.IN_FRAC_W  == self.IN_W, (
+            f"CicDecimator IN_INT_W ({self.IN_INT_W}) + IN_FRAC_W "
+            f"({self.IN_FRAC_W}) != IN_W ({self.IN_W})")
+        assert self.OUT_INT_W + self.OUT_FRAC_W == self.OUT_W, (
+            f"CicDecimator OUT_INT_W ({self.OUT_INT_W}) + OUT_FRAC_W "
+            f"({self.OUT_FRAC_W}) != OUT_W ({self.OUT_W})")
         # Bit growth: ceil(log2((R*M)^N)). For power-of-2 R*M this is
         # exactly N * log2(R*M). For general R*M, slightly overprovisioned
         # (which is safe; just uses a few more bits than strictly needed).
@@ -187,7 +208,11 @@ class CicInterpolator:
     """
 
     def __init__(self, stages: int, interp: int, delay: int = 1,
-                 in_w: int = 16, out_w: int = 16) -> None:
+                 in_w: int = 16, out_w: int = 16,
+                 in_int_w: int | None = None,
+                 in_frac_w: int | None = None,
+                 out_int_w: int | None = None,
+                 out_frac_w: int | None = None) -> None:
         assert stages >= 1
         assert interp >= 1
         assert delay >= 1
@@ -196,6 +221,13 @@ class CicInterpolator:
         self.M = delay
         self.IN_W = in_w
         self.OUT_W = out_w
+        # Q-format (informational; see CicDecimator).
+        self.IN_INT_W   = in_int_w   if in_int_w   is not None else 1
+        self.IN_FRAC_W  = in_frac_w  if in_frac_w  is not None else (in_w - self.IN_INT_W)
+        self.OUT_INT_W  = out_int_w  if out_int_w  is not None else 1
+        self.OUT_FRAC_W = out_frac_w if out_frac_w is not None else (out_w - self.OUT_INT_W)
+        assert self.IN_INT_W  + self.IN_FRAC_W  == self.IN_W
+        assert self.OUT_INT_W + self.OUT_FRAC_W == self.OUT_W
         gain = (self.R * self.M) ** self.N
         self.GAIN_BITS = math.ceil(math.log2(gain)) if gain > 1 else 0
         self.INTERNAL_W = self.IN_W + self.GAIN_BITS
@@ -285,13 +317,36 @@ class FirFilter:
     """
 
     def __init__(self, n_taps: int, in_w: int = 16, coef_w: int = 16,
-                 out_w: int | None = None, out_shift: int | None = None) -> None:
+                 out_w: int | None = None, out_shift: int | None = None,
+                 in_int_w:    int | None = None,
+                 in_frac_w:   int | None = None,
+                 coef_int_w:  int | None = None,
+                 coef_frac_w: int | None = None,
+                 out_int_w:   int | None = None,
+                 out_frac_w:  int | None = None) -> None:
         assert n_taps >= 1
         self.N_TAPS = n_taps
         self.IN_W = in_w
         self.COEF_W = coef_w
         self.OUT_W = out_w if out_w is not None else in_w
-        self.OUT_SHIFT = out_shift if out_shift is not None else (coef_w - 1)
+        # Q-format fields (informational — like the CIC models, the FIR's
+        # arithmetic operates on integers; these exist to document the
+        # contract and to drive the default OUT_SHIFT below). Defaults
+        # are Q1.(W-1) — matches every test in the repo.
+        self.IN_INT_W    = in_int_w    if in_int_w    is not None else 1
+        self.IN_FRAC_W   = in_frac_w   if in_frac_w   is not None else (in_w - self.IN_INT_W)
+        self.COEF_INT_W  = coef_int_w  if coef_int_w  is not None else 1
+        self.COEF_FRAC_W = coef_frac_w if coef_frac_w is not None else (coef_w - self.COEF_INT_W)
+        self.OUT_INT_W   = out_int_w   if out_int_w   is not None else 1
+        self.OUT_FRAC_W  = out_frac_w  if out_frac_w  is not None else (self.OUT_W - self.OUT_INT_W)
+        assert self.IN_INT_W   + self.IN_FRAC_W   == self.IN_W
+        assert self.COEF_INT_W + self.COEF_FRAC_W == self.COEF_W
+        assert self.OUT_INT_W  + self.OUT_FRAC_W  == self.OUT_W
+        # OUT_SHIFT defaults to COEF_FRAC_W so the multiply-and-accumulate
+        # preserves the input's Q-position. When coefficients are
+        # Q1.(COEF_W-1) the default works out to COEF_W-1, matching the
+        # historical default.
+        self.OUT_SHIFT = out_shift if out_shift is not None else self.COEF_FRAC_W
         self.ACCUM_W = (
             in_w + coef_w + math.ceil(math.log2(max(n_taps, 2))))
         # State
@@ -390,19 +445,42 @@ class CicFirChain:
                  fir_in_w:   int | None = None,
                  fir_coef_w: int = 16,
                  fir_out_w:  int = 16,
-                 fir_out_shift: int | None = None) -> None:
+                 fir_out_shift: int | None = None,
+                 # Q-format. All optional; defaults are Q1.(W-1) for
+                 # each width.
+                 sample_int_w:    int | None = None,
+                 sample_frac_w:   int | None = None,
+                 fir_coef_int_w:  int | None = None,
+                 fir_coef_frac_w: int | None = None) -> None:
         if fir_in_w is None:
             fir_in_w = cic_out_w
+        # OUT_SHIFT default tracks the coefficient fractional-bit count
+        # when one is provided; otherwise falls back to the historical
+        # COEF_W-1 (i.e. Q1.(COEF_W-1)).
         if fir_out_shift is None:
-            fir_out_shift = fir_coef_w - 1
+            if fir_coef_frac_w is not None:
+                fir_out_shift = fir_coef_frac_w
+            else:
+                fir_out_shift = fir_coef_w - 1
         assert fir_in_w == cic_out_w, (
             f"chain stage widths must match: CIC output is {cic_out_w} bits, "
             f"FIR input declared {fir_in_w} bits")
-        self.cic = CicDecimator(stages=cic_stages, decim=cic_decim,
-                                delay=cic_delay, in_w=cic_in_w, out_w=cic_out_w)
-        self.fir = FirFilter(n_taps=fir_n_taps, in_w=fir_in_w,
-                             coef_w=fir_coef_w, out_w=fir_out_w,
-                             out_shift=fir_out_shift)
+        # Same Q-format for CIC in/out and FIR in/out — the chain is
+        # SAMPLE_W-wide end-to-end with one Q-position.
+        self.cic = CicDecimator(
+            stages=cic_stages, decim=cic_decim, delay=cic_delay,
+            in_w=cic_in_w,  out_w=cic_out_w,
+            in_int_w=sample_int_w,   in_frac_w=sample_frac_w,
+            out_int_w=sample_int_w,  out_frac_w=sample_frac_w,
+        )
+        self.fir = FirFilter(
+            n_taps=fir_n_taps, in_w=fir_in_w,
+            coef_w=fir_coef_w, out_w=fir_out_w,
+            out_shift=fir_out_shift,
+            in_int_w=sample_int_w,    in_frac_w=sample_frac_w,
+            coef_int_w=fir_coef_int_w, coef_frac_w=fir_coef_frac_w,
+            out_int_w=sample_int_w,   out_frac_w=sample_frac_w,
+        )
 
     # ---- Coefficient bank (proxy to the underlying FIR) ----
     def set_coef(self, index: int, value: int) -> None:

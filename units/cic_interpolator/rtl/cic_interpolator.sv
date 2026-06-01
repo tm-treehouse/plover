@@ -39,8 +39,18 @@ module cic_interpolator #(
     parameter int unsigned STAGES = 3,
     parameter int unsigned INTERP = 4,
     parameter int unsigned DELAY  = 1,
-    parameter int unsigned IN_W   = 16,
-    parameter int unsigned OUT_W  = 16
+    // -------------------------------------------------------------------
+    // Sample widths and Q-format. See cic_decimator for the full
+    // explanation; same shape here. Q params are informational — the
+    // CIC's arithmetic operates on plain signed integers and is
+    // intrinsically Q-position-preserving.
+    // -------------------------------------------------------------------
+    parameter int unsigned IN_W       = 16,
+    parameter int unsigned IN_INT_W   = 1,
+    parameter int unsigned IN_FRAC_W  = IN_W - IN_INT_W,
+    parameter int unsigned OUT_W      = 16,
+    parameter int unsigned OUT_INT_W  = 1,
+    parameter int unsigned OUT_FRAC_W = OUT_W - OUT_INT_W
 ) (
     input  wire                     clk,
     input  wire                     rst_n,
@@ -63,6 +73,16 @@ module cic_interpolator #(
     localparam int GAIN_BITS  = gain_bits(INTERP, DELAY, STAGES);
     localparam int INTERNAL_W = IN_W + GAIN_BITS;
     localparam int CNT_W      = (INTERP > 1) ? $clog2(INTERP) : 1;
+
+    // ---- Elaboration-time Q-format consistency checks ------------------
+    initial begin
+        if (IN_INT_W + IN_FRAC_W != IN_W)
+            $fatal(1, "cic_interpolator: IN_INT_W (%0d) + IN_FRAC_W (%0d) != IN_W (%0d)",
+                   IN_INT_W, IN_FRAC_W, IN_W);
+        if (OUT_INT_W + OUT_FRAC_W != OUT_W)
+            $fatal(1, "cic_interpolator: OUT_INT_W (%0d) + OUT_FRAC_W (%0d) != OUT_W (%0d)",
+                   OUT_INT_W, OUT_FRAC_W, OUT_W);
+    end
 
     // ---- State machine -------------------------------------------------
     typedef enum logic {S_IDLE, S_RUN} state_e;

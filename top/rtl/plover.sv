@@ -46,12 +46,27 @@ module plover #(
     parameter int unsigned   CIC_STAGES = 3,
     parameter int unsigned   CIC_DECIM  = 4,
     parameter int unsigned   CIC_DELAY  = 1,
-    // Sample width used end-to-end through the chain.
-    parameter int unsigned   SAMPLE_W   = 16,
-    // FIR: N taps, coefficient width, OUT_SHIFT for output Q-alignment.
-    parameter int unsigned   FIR_N_TAPS    = 8,
-    parameter int unsigned   FIR_COEF_W    = 16,
-    parameter int            FIR_OUT_SHIFT = 15
+    // Sample width and Q-format used end-to-end through the chain.
+    // The chain (CIC -> FIR) carries SAMPLE_W-bit signed samples whose
+    // value is interpreted with SAMPLE_INT_W integer bits (including
+    // sign) and SAMPLE_FRAC_W fractional bits. Default Q1.15: samples
+    // in [-1.0, +1.0). The Q params are informational — the arithmetic
+    // operates on integers and is unity-DC-gain through the CIC, so
+    // input and output Q-positions are the same.
+    parameter int unsigned   SAMPLE_W        = 16,
+    parameter int unsigned   SAMPLE_INT_W    = 1,
+    parameter int unsigned   SAMPLE_FRAC_W   = SAMPLE_W - SAMPLE_INT_W,
+    // FIR: N taps, coefficient width + Q-format, OUT_SHIFT for output
+    // Q-alignment. With the default FIR_COEF_INT_W=1 / FIR_COEF_FRAC_W=15,
+    // OUT_SHIFT=15 = FIR_COEF_FRAC_W gives back samples at the input
+    // Q-position. If coefficients were e.g. Q3.13, set FIR_COEF_INT_W=3,
+    // FIR_COEF_FRAC_W=13, FIR_OUT_SHIFT=13 to preserve the input
+    // Q-position through the multiply.
+    parameter int unsigned   FIR_N_TAPS      = 8,
+    parameter int unsigned   FIR_COEF_W      = 16,
+    parameter int unsigned   FIR_COEF_INT_W  = 1,
+    parameter int unsigned   FIR_COEF_FRAC_W = FIR_COEF_W - FIR_COEF_INT_W,
+    parameter int            FIR_OUT_SHIFT   = FIR_COEF_FRAC_W
 ) (
     input  wire                       clk,
     input  wire                       rst_n,
@@ -307,11 +322,15 @@ module plover #(
     wire                          cic2fir_tready;
 
     cic_decimator #(
-        .STAGES (CIC_STAGES),
-        .DECIM  (CIC_DECIM),
-        .DELAY  (CIC_DELAY),
-        .IN_W   (SAMPLE_W),
-        .OUT_W  (SAMPLE_W)
+        .STAGES     (CIC_STAGES),
+        .DECIM      (CIC_DECIM),
+        .DELAY      (CIC_DELAY),
+        .IN_W       (SAMPLE_W),
+        .IN_INT_W   (SAMPLE_INT_W),
+        .IN_FRAC_W  (SAMPLE_FRAC_W),
+        .OUT_W      (SAMPLE_W),
+        .OUT_INT_W  (SAMPLE_INT_W),
+        .OUT_FRAC_W (SAMPLE_FRAC_W)
     ) u_cic_decim (
         .clk(clk), .rst_n(rst_n),
         .s_axis_tdata  (s_axis_tdata),
@@ -323,11 +342,17 @@ module plover #(
     );
 
     fir_filter #(
-        .N_TAPS    (FIR_N_TAPS),
-        .IN_W      (SAMPLE_W),
-        .COEF_W    (FIR_COEF_W),
-        .OUT_W     (SAMPLE_W),
-        .OUT_SHIFT (FIR_OUT_SHIFT)
+        .N_TAPS      (FIR_N_TAPS),
+        .IN_W        (SAMPLE_W),
+        .IN_INT_W    (SAMPLE_INT_W),
+        .IN_FRAC_W   (SAMPLE_FRAC_W),
+        .COEF_W      (FIR_COEF_W),
+        .COEF_INT_W  (FIR_COEF_INT_W),
+        .COEF_FRAC_W (FIR_COEF_FRAC_W),
+        .OUT_W       (SAMPLE_W),
+        .OUT_INT_W   (SAMPLE_INT_W),
+        .OUT_FRAC_W  (SAMPLE_FRAC_W),
+        .OUT_SHIFT   (FIR_OUT_SHIFT)
     ) u_fir (
         .clk(clk), .rst_n(rst_n),
         // AXI-Lite coefficient bank (xbar slave FIR_IDX)

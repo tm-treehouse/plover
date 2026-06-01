@@ -463,6 +463,54 @@ vendor-agnostic at this stage; see `top/syn/README.md` for how to wire a
 real synthesis flow into the `syn` target of `plover.core` once a vendor is
 picked.
 
+## Fixed-point format
+
+Every DSP unit (`cic_decimator`, `cic_interpolator`, `fir_filter`) and
+the project top expose paired parameters for each signed signal:
+
+| Parameter           | Meaning                                              |
+| ------------------- | ---------------------------------------------------- |
+| `<sig>_W`           | Total signed width in bits (including the sign bit). |
+| `<sig>_INT_W`       | Integer bits above the binary point (incl. sign).    |
+| `<sig>_FRAC_W`      | Fractional bits below the binary point.              |
+
+The three are related by `<sig>_W = <sig>_INT_W + <sig>_FRAC_W`; an
+elaboration-time `$fatal` assertion in each unit catches mismatches.
+The fractional/integer split says nothing about the *arithmetic* — all
+units operate on plain signed integers internally — it only documents
+the *interpretation*: a 16-bit signed integer can represent any
+`Qm.n` format with `m+n=16`, and which one the testbench has in mind
+is now visible at the instantiation site.
+
+Defaults are `Q1.(W-1)` for every signal: one integer bit (the sign)
+and `W-1` fractional bits, putting values in `[-1.0, +1.0)`. This
+matches every existing test in the repo and means existing
+instantiations work unchanged.
+
+Worked example. With FIR defaults `COEF_W=16, COEF_INT_W=1,
+COEF_FRAC_W=15`, the coefficients are `Q1.15`: the largest positive
+value is `0x7FFF ≈ 0.99997`. With `COEF_INT_W=3, COEF_FRAC_W=13`, the
+coefficients are `Q3.13`: the largest positive value is `0x7FFF ≈
+3.99988`, giving headroom for filters whose impulse response sums to
+> 1 without overflow. The FIR's `OUT_SHIFT` defaults to `COEF_FRAC_W`,
+which preserves the input's Q-position through the multiply-and-
+accumulate regardless of the coefficient Q-format.
+
+The `fir_filter` unit's parameter sweep includes a `Q3.13` config
+(`PARAM_CONFIGS` in `test_fir_filter_pytest.py`) that programs the
+RTL and the Python reference model with matching `COEF_INT_W=3,
+COEF_FRAC_W=13, OUT_SHIFT=13` and confirms bit-exact agreement
+end-to-end — proving the new machinery actually drives a real Q
+change and isn't just a documentation rename. The other configs
+(default + the `T16`, `T4` sweeps) all stay at `Q1.15`.
+
+CIC's arithmetic is intrinsically Q-position-preserving (the
+top-OUT_W-bits truncation drops LSBs equally in input and output Q
+positions), so its `_INT_W` / `_FRAC_W` parameters are purely
+informational. They exist to make the contract legible and to let
+downstream units (e.g. an FIR fed by the CIC) assert their inputs
+match what's being produced.
+
 ## Host-side C (`top/host/`)
 
 `top/host/` holds C "firmware" — host-side code that drives the chip

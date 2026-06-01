@@ -42,11 +42,15 @@ from dv.dsp_plot import plot_test_result  # noqa: E402
 
 CLK_PERIOD_NS = 10
 
-N_TAPS    = int(os.environ.get("FIR_N_TAPS",    "8"))
-IN_W      = int(os.environ.get("FIR_IN_W",      "16"))
-COEF_W    = int(os.environ.get("FIR_COEF_W",    "16"))
-OUT_W     = int(os.environ.get("FIR_OUT_W",     "16"))
-OUT_SHIFT = int(os.environ.get("FIR_OUT_SHIFT", "15"))
+N_TAPS      = int(os.environ.get("FIR_N_TAPS",      "8"))
+IN_W        = int(os.environ.get("FIR_IN_W",        "16"))
+COEF_W      = int(os.environ.get("FIR_COEF_W",      "16"))
+OUT_W       = int(os.environ.get("FIR_OUT_W",       "16"))
+OUT_SHIFT   = int(os.environ.get("FIR_OUT_SHIFT",   "15"))
+# Q-format. Defaults Q1.(W-1) so existing tests that don't set these
+# behave exactly as before.
+COEF_INT_W  = int(os.environ.get("FIR_COEF_INT_W",  "1"))
+COEF_FRAC_W = int(os.environ.get("FIR_COEF_FRAC_W", str(COEF_W - 1)))
 
 
 def _signed(value: int, width: int) -> int:
@@ -134,7 +138,8 @@ async def _collect_samples(sink: AxiStreamSink, n: int) -> list[int]:
 
 def _build_model() -> FirFilter:
     return FirFilter(n_taps=N_TAPS, in_w=IN_W, coef_w=COEF_W,
-                     out_w=OUT_W, out_shift=OUT_SHIFT)
+                     out_w=OUT_W, out_shift=OUT_SHIFT,
+                     coef_int_w=COEF_INT_W, coef_frac_w=COEF_FRAC_W)
 
 
 @pyuvm.test()

@@ -55,10 +55,43 @@
 
 module fir_filter #(
     parameter int unsigned N_TAPS    = 8,
-    parameter int unsigned IN_W      = 16,
-    parameter int unsigned COEF_W    = 16,
-    parameter int unsigned OUT_W     = 16,
-    parameter int          OUT_SHIFT = COEF_W - 1
+    // -------------------------------------------------------------------
+    // Sample/coefficient widths and Q-format.
+    //
+    // *_W parameters are the total signed width (sign bit + remaining
+    // bits). *_INT_W and *_FRAC_W decompose that width into integer
+    // bits (above the binary point, including the sign bit) and
+    // fractional bits (below). An assertion below requires
+    // _INT_W + _FRAC_W == _W so the three numbers can't drift.
+    //
+    // Defaults are Q1.(W-1): one integer bit (the sign), W-1 fractional
+    // bits — i.e. values in [-1.0, +1.0). This matches every existing
+    // test in the repo. Override _INT_W/_FRAC_W to declare any other
+    // Q-position (e.g. Q3.13 for 16-bit coefficients with headroom).
+    //
+    // The Q-format parameters are *informational* w.r.t. the arithmetic
+    // — the MAC still operates on plain signed integers. Their job is
+    // to make the contract legible at the instantiation site and to
+    // catch silly mistakes (e.g. mismatched widths) at elaboration.
+    // They also drive the default OUT_SHIFT below.
+    // -------------------------------------------------------------------
+    parameter int unsigned IN_W        = 16,
+    parameter int unsigned IN_INT_W    = 1,
+    parameter int unsigned IN_FRAC_W   = IN_W - IN_INT_W,
+    parameter int unsigned COEF_W      = 16,
+    parameter int unsigned COEF_INT_W  = 1,
+    parameter int unsigned COEF_FRAC_W = COEF_W - COEF_INT_W,
+    parameter int unsigned OUT_W       = 16,
+    parameter int unsigned OUT_INT_W   = 1,
+    parameter int unsigned OUT_FRAC_W  = OUT_W - OUT_INT_W,
+    // OUT_SHIFT is the right-shift applied to the accumulator before
+    // truncation to OUT_W. To preserve the input's Q-position through
+    // the multiply-and-accumulate, shift by COEF_FRAC_W (the
+    // fractional-bit count of the coefficients). The previous default
+    // COEF_W-1 is equivalent when coefficients are Q1.(COEF_W-1) —
+    // i.e. the all-fractional default. With other Q-formats you almost
+    // certainly want COEF_FRAC_W.
+    parameter int          OUT_SHIFT   = COEF_FRAC_W
 ) (
     input  wire                    clk,
     input  wire                    rst_n,
@@ -115,6 +148,24 @@ module fir_filter #(
     // expected to handle aliasing.
     localparam int ADDR_BITS = 2 + IDX_BITS;
     localparam logic [31:0] ADDR_MASK = (1 << ADDR_BITS) - 1;
+
+    // ---- Elaboration-time Q-format consistency checks ------------------
+    // These fire if a user passes inconsistent _W / _INT_W / _FRAC_W
+    // values (e.g. IN_W=16, IN_INT_W=3, IN_FRAC_W=14 — total is 17, not
+    // 16). The intent is to catch silently-wrong instantiations at
+    // elaboration rather than at sample-stream time when bit-exact
+    // comparisons fail mysteriously.
+    initial begin
+        if (IN_INT_W + IN_FRAC_W != IN_W)
+            $fatal(1, "fir_filter: IN_INT_W (%0d) + IN_FRAC_W (%0d) != IN_W (%0d)",
+                   IN_INT_W, IN_FRAC_W, IN_W);
+        if (COEF_INT_W + COEF_FRAC_W != COEF_W)
+            $fatal(1, "fir_filter: COEF_INT_W (%0d) + COEF_FRAC_W (%0d) != COEF_W (%0d)",
+                   COEF_INT_W, COEF_FRAC_W, COEF_W);
+        if (OUT_INT_W + OUT_FRAC_W != OUT_W)
+            $fatal(1, "fir_filter: OUT_INT_W (%0d) + OUT_FRAC_W (%0d) != OUT_W (%0d)",
+                   OUT_INT_W, OUT_FRAC_W, OUT_W);
+    end
 
     localparam logic [1:0] RESP_OKAY   = 2'b00;
     localparam logic [1:0] RESP_DECERR = 2'b11;

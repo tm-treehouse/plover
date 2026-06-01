@@ -46,8 +46,32 @@ module cic_decimator #(
     parameter int unsigned STAGES = 3,
     parameter int unsigned DECIM  = 4,
     parameter int unsigned DELAY  = 1,
-    parameter int unsigned IN_W   = 16,
-    parameter int unsigned OUT_W  = 16
+    // -------------------------------------------------------------------
+    // Sample widths and Q-format.
+    //
+    // *_W is total signed width; *_INT_W and *_FRAC_W decompose it into
+    // integer bits (incl. sign) and fractional bits. An assertion below
+    // requires _INT_W + _FRAC_W == _W.
+    //
+    // Defaults are Q1.(W-1): values in [-1.0, +1.0). The Q parameters
+    // are *informational* — the CIC's arithmetic operates on plain
+    // signed integers and is intrinsically Q-position-preserving (the
+    // top-OUT_W-bits truncation drops LSBs equally in input and output
+    // Q positions). The params exist to make the contract legible at
+    // the instantiation site and so downstream units (e.g. an FIR fed
+    // by this CIC) can check that their inputs match what's being
+    // produced.
+    //
+    // Note: input and output are typically the *same* Q-position
+    // because CIC is unity-DC-gain. If your test treats samples as
+    // Q3.13, the CIC's output is also Q3.13.
+    // -------------------------------------------------------------------
+    parameter int unsigned IN_W       = 16,
+    parameter int unsigned IN_INT_W   = 1,
+    parameter int unsigned IN_FRAC_W  = IN_W - IN_INT_W,
+    parameter int unsigned OUT_W      = 16,
+    parameter int unsigned OUT_INT_W  = 1,
+    parameter int unsigned OUT_FRAC_W = OUT_W - OUT_INT_W
 ) (
     input  wire                     clk,
     input  wire                     rst_n,
@@ -76,6 +100,18 @@ module cic_decimator #(
     localparam int GAIN_BITS  = gain_bits(DECIM, DELAY, STAGES);
     localparam int INTERNAL_W = IN_W + GAIN_BITS;
     localparam int CNT_W      = (DECIM > 1) ? $clog2(DECIM) : 1;
+
+    // ---- Elaboration-time Q-format consistency checks ------------------
+    // See comment on the parameters above. These fire if a user passes
+    // inconsistent _W / _INT_W / _FRAC_W values.
+    initial begin
+        if (IN_INT_W + IN_FRAC_W != IN_W)
+            $fatal(1, "cic_decimator: IN_INT_W (%0d) + IN_FRAC_W (%0d) != IN_W (%0d)",
+                   IN_INT_W, IN_FRAC_W, IN_W);
+        if (OUT_INT_W + OUT_FRAC_W != OUT_W)
+            $fatal(1, "cic_decimator: OUT_INT_W (%0d) + OUT_FRAC_W (%0d) != OUT_W (%0d)",
+                   OUT_INT_W, OUT_FRAC_W, OUT_W);
+    end
 
     // ---- State ---------------------------------------------------------
     // Integrator stages: one register each.

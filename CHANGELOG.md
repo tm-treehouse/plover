@@ -7,6 +7,47 @@ to follow semantic versioning.
 ## [Unreleased]
 
 ### Added
+- **Fixed-point Q-format parameters on every DSP unit and the top.**
+  Each signed signal (sample input, sample output, FIR coefficient)
+  now has paired `*_INT_W` and `*_FRAC_W` parameters next to its
+  existing total `*_W`. The three are related by
+  `*_W = *_INT_W + *_FRAC_W` and an elaboration-time `$fatal`
+  assertion catches mismatches.
+
+  The parameters are *informational* with respect to arithmetic —
+  every unit still operates on plain signed integers internally. Their
+  job is to make the Q-position legible at the instantiation site
+  (you don't have to reverse-engineer it from `IN_W` and `OUT_SHIFT`)
+  and to let elaboration catch silly mistakes (passing inconsistent
+  totals/splits).
+
+  One real effect: the FIR's `OUT_SHIFT` default changes from
+  `COEF_W-1` to `COEF_FRAC_W`. Identical value with Q1.(W-1) defaults
+  (`COEF_FRAC_W` defaults to `COEF_W-1`), but the *name* now reflects
+  the meaning: "shift by the coefficient's fractional-bit count to
+  preserve the input's Q-position through the multiply." Setting
+  `COEF_INT_W=3, COEF_FRAC_W=13` (Q3.13 coefs) makes `OUT_SHIFT`
+  default to 13 — the right thing without users having to know to
+  compute it.
+
+  Defaults across all units are Q1.(W-1) — the format every existing
+  test already used — so the change is backward-compatible. Every
+  existing instantiation (passing only `IN_W=16, COEF_W=16, OUT_W=16`)
+  works unchanged.
+
+  Mirrored in the Python models: `CicDecimator`, `CicInterpolator`,
+  `FirFilter`, and `CicFirChain` all gained `*_int_w` / `*_frac_w`
+  fields with the same defaults and assertion. The `fir_filter` pytest
+  config grew a fourth parameter sweep row exercising Q3.13
+  coefficients end-to-end: both the RTL and the Python model are
+  configured with `COEF_INT_W=3, COEF_FRAC_W=13, OUT_SHIFT=13` and
+  bit-exact agreement is confirmed across all four test scenarios
+  (impulse, averaging, arbitrary, hot_update). 16 FIR tests now (was
+  12).
+
+  README gained a "Fixed-point format" section explaining the
+  parameter set with a worked example.
+
 - **CIC -> FIR signal chain integrated into `plover.sv`.** The DSP
   units verified standalone in the previous arc now form an inline
   signal chain at the project top:
