@@ -401,6 +401,100 @@ class FirFilter:
         return [self.step(s) for s in samples]
 
 
+class DcBlocker:
+    """Bit-exact model of a first-order IIR DC blocker.
+
+    Transfer function H(z) = (1 - z^-1) / (1 - alpha * z^-1). Removes
+    the DC component of an input stream by placing a zero at DC and a
+    pole at z = alpha (just inside the unit circle).
+
+    Difference equation, matching the RTL exactly:
+
+        y[n] = (x[n] - x[n-1]) + (alpha * y[n-1]) >> COEF_FRAC_W
+
+    All arithmetic uses two's-complement wrap; the feedback product is
+    shifted right by ``COEF_FRAC_W`` and the result is truncated to
+    OUT_W bits (low bits of the shifted result, same convention as the
+    FIR — no saturation, no rounding).
+
+    Honest caveat: truncation in a feedback path drifts toward negative
+    values over time (truncation rounds toward -infinity). Documented
+    in the RTL and inherited here. A rounding variant could be added
+    later if a chain shows measurable bias.
+
+    The coefficient bank is one register (``alpha``), updated via
+    :meth:`set_alpha`. Defaults to 0 — the filter acts as a pure
+    differentiator y[n] = x[n] - x[n-1] until alpha is programmed.
+    """
+
+    def __init__(self, in_w: int = 16, coef_w: int = 16,
+                 out_w: int | None = None,
+                 in_int_w:    int | None = None,
+                 in_frac_w:   int | None = None,
+                 coef_int_w:  int | None = None,
+                 coef_frac_w: int | None = None,
+                 out_int_w:   int | None = None,
+                 out_frac_w:  int | None = None) -> None:
+        self.IN_W = in_w
+        self.COEF_W = coef_w
+        self.OUT_W = out_w if out_w is not None else in_w
+        # Q-format (informational; defaults to Q1.(W-1) per the
+        # project convention).
+        self.IN_INT_W    = in_int_w    if in_int_w    is not None else 1
+        self.IN_FRAC_W   = in_frac_w   if in_frac_w   is not None else (in_w - self.IN_INT_W)
+        self.COEF_INT_W  = coef_int_w  if coef_int_w  is not None else 1
+        self.COEF_FRAC_W = coef_frac_w if coef_frac_w is not None else (coef_w - self.COEF_INT_W)
+        self.OUT_INT_W   = out_int_w   if out_int_w   is not None else 1
+        self.OUT_FRAC_W  = out_frac_w  if out_frac_w  is not None else (self.OUT_W - self.OUT_INT_W)
+        assert self.IN_INT_W   + self.IN_FRAC_W   == self.IN_W
+        assert self.COEF_INT_W + self.COEF_FRAC_W == self.COEF_W
+        assert self.OUT_INT_W  + self.OUT_FRAC_W  == self.OUT_W
+        # State
+        self._x_prev = 0
+        self._y_prev = 0
+        self._alpha = 0
+
+    def set_alpha(self, value: int) -> None:
+        """Program the feedback coefficient. ``value`` is signed,
+        interpreted in Q-format. Stored truncated to COEF_W bits."""
+        self._alpha = _signed_wrap(value, self.COEF_W)
+
+    def get_alpha(self) -> int:
+        return self._alpha
+
+    def step(self, sample: int) -> int:
+        """Push one input sample; return one output sample.
+
+        Matches the RTL's combinational expression and registered
+        output exactly: y_next = (x - x_prev) + (alpha*y_prev) >> COEF_FRAC_W,
+        truncated to OUT_W. State (x_prev, y_prev) updates after each
+        call.
+        """
+        x = _signed_wrap(sample, self.IN_W)
+        diff = x - self._x_prev
+        # Product width = COEF_W + OUT_W (matches the RTL's PROD_W).
+        # The feedback product can hold its full bit growth; we then
+        # arithmetic-right-shift by COEF_FRAC_W (drops fractional bits
+        # of the product so it returns to OUT_W's Q-position) and
+        # truncate to OUT_W low bits.
+        prod = self._alpha * self._y_prev
+        # Python int >> on a negative value is arithmetic (sign-extending)
+        # which matches Verilog >>> on signed values.
+        shifted = prod >> self.COEF_FRAC_W
+        feedback = _signed_wrap(shifted, self.OUT_W)
+        # diff is wider than OUT_W; take low OUT_W bits, signed. This
+        # mirrors the RTL's diff_in_out_w = diff_term[OUT_W-1:0].
+        diff_trunc = _signed_wrap(diff, self.OUT_W)
+        y_next = _signed_wrap(diff_trunc + feedback, self.OUT_W)
+        # Update state for the next call.
+        self._x_prev = x
+        self._y_prev = y_next
+        return y_next
+
+    def run(self, samples: list[int]) -> list[int]:
+        return [self.step(s) for s in samples]
+
+
 # ----------------------------------------------------------------------
 # System-level chain models
 # ----------------------------------------------------------------------

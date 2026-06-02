@@ -1,0 +1,78 @@
+CAPI=2:
+# FuseSoC core for the dc_blocker unit.
+# First-order IIR highpass with AXI-Lite-programmable alpha coefficient.
+
+name: ::dc_blocker:0.1.0
+description: First-order IIR DC blocker (AXIS in/out, AXI-Lite alpha)
+
+filesets:
+  rtl:
+    files:
+      - rtl/dc_blocker.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+      - rtl
+    toplevel: dc_blocker
+
+  lint:
+    default_tool: verilator
+    filesets:
+      - rtl
+    toplevel: dc_blocker
+    tools:
+      verilator:
+        mode: lint-only
+        verilator_options:
+          - -Wall
+          - -Wno-DECLFILENAME
+          - -Wno-UNUSEDSIGNAL
+
+parameters:
+  IN_W:
+    datatype: int
+    description: Input sample width (signed bits)
+    paramtype: vlogparam
+    default: 16
+  IN_INT_W:
+    datatype: int
+    description: Integer bits of input (incl. sign)
+    paramtype: vlogparam
+    default: 1
+  IN_FRAC_W:
+    datatype: int
+    description: Fractional bits of input
+    paramtype: vlogparam
+    default: 15
+  COEF_W:
+    datatype: int
+    description: Alpha coefficient width (signed bits)
+    paramtype: vlogparam
+    default: 16
+  COEF_INT_W:
+    datatype: int
+    description: Integer bits of alpha (incl. sign)
+    paramtype: vlogparam
+    default: 1
+  COEF_FRAC_W:
+    datatype: int
+    description: Fractional bits of alpha
+    paramtype: vlogparam
+    default: 15
+  OUT_W:
+    datatype: int
+    description: Output sample width (signed bits)
+    paramtype: vlogparam
+    default: 16
+  OUT_INT_W:
+    datatype: int
+    description: Integer bits of output (incl. sign)
+    paramtype: vlogparam
+    default: 1
+  OUT_FRAC_W:
+    datatype: int
+    description: Fractional bits of output
+    paramtype: vlogparam
+    default: 15
