@@ -1,0 +1,54 @@
+CAPI=2:
+# FuseSoC core for the complex_mixer unit.
+# Complex multiplier: out = a * b where a, b, out are complex (I + j*Q).
+
+name: ::complex_mixer:0.1.0
+description: Complex multiplier — IQ x IQ -> IQ on AXIS
+
+filesets:
+  rtl:
+    files:
+      - rtl/complex_mixer.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+      - rtl
+    toplevel: complex_mixer
+
+  lint:
+    default_tool: verilator
+    filesets:
+      - rtl
+    toplevel: complex_mixer
+    tools:
+      verilator:
+        mode: lint-only
+        verilator_options:
+          - -Wall
+          - -Wno-DECLFILENAME
+          - -Wno-UNUSEDSIGNAL
+          - -Wno-WIDTHEXPAND
+
+parameters:
+  SAMPLE_W:
+    datatype: int
+    description: Sample width per I or Q (signed bits)
+    paramtype: vlogparam
+    default: 16
+  SAMPLE_INT_W:
+    datatype: int
+    description: Integer bits of sample (incl. sign)
+    paramtype: vlogparam
+    default: 1
+  SAMPLE_FRAC_W:
+    datatype: int
+    description: Fractional bits of sample
+    paramtype: vlogparam
+    default: 15
+  OUT_SHIFT:
+    datatype: int
+    description: Right-shift before truncation (defaults to SAMPLE_FRAC_W)
+    paramtype: vlogparam
+    default: 15

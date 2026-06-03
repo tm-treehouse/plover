@@ -533,6 +533,71 @@ class Nco:
 
 
 
+class ComplexMixer:
+    """Bit-exact model of a complex multiplier (the "mixer" in an SDR
+    receive/transmit chain).
+
+    Multiplies two complex streams beat-by-beat:
+
+        out = a * b
+            = (I_a + j Q_a) * (I_b + j Q_b)
+            = (I_a*I_b - Q_a*Q_b) + j * (I_a*Q_b + Q_a*I_b)
+
+    All arithmetic operates on signed integers — Q-format is the
+    consumer's responsibility (the model carries int_w/frac_w fields
+    as informational). Output formation matches the RTL exactly: each
+    sum/diff is arithmetic-right-shifted by ``out_shift`` (defaults to
+    ``sample_frac_w``, preserving the input Q-position through the
+    multiply), then the low ``sample_w`` bits taken as signed.
+
+    State: none. The mixer is purely combinational from a model
+    perspective — :meth:`step` takes two complex samples and returns
+    one. The RTL has a one-cycle output register but the consumer's
+    view of the per-beat math is identical.
+    """
+
+    def __init__(self, sample_w: int = 16,
+                 sample_int_w:  int | None = None,
+                 sample_frac_w: int | None = None,
+                 out_shift:     int | None = None) -> None:
+        self.SAMPLE_W = sample_w
+        self.SAMPLE_INT_W  = sample_int_w  if sample_int_w  is not None else 1
+        self.SAMPLE_FRAC_W = sample_frac_w if sample_frac_w is not None else (sample_w - self.SAMPLE_INT_W)
+        assert self.SAMPLE_INT_W + self.SAMPLE_FRAC_W == self.SAMPLE_W
+        self.OUT_SHIFT = out_shift if out_shift is not None else self.SAMPLE_FRAC_W
+
+    def step(self, a: tuple[int, int], b: tuple[int, int]) -> tuple[int, int]:
+        """One complex multiplication.
+
+        ``a`` and ``b`` are ``(I, Q)`` signed integer tuples. Returns
+        ``(I_out, Q_out)`` signed integers, after the arithmetic shift
+        and low-bit truncation.
+        """
+        a_i, a_q = a
+        b_i, b_q = b
+        p_ii = a_i * b_i
+        p_qq = a_q * b_q
+        p_iq = a_i * b_q
+        p_qi = a_q * b_i
+        sum_i = p_ii - p_qq
+        sum_q = p_iq + p_qi
+        # Arithmetic right shift, then take low SAMPLE_W bits as signed
+        # (matches RTL's shifted[SAMPLE_W-1:0]).
+        out_i = _signed_wrap(sum_i >> self.OUT_SHIFT, self.SAMPLE_W)
+        out_q = _signed_wrap(sum_q >> self.OUT_SHIFT, self.SAMPLE_W)
+        return (out_i, out_q)
+
+    def run(self, a_samples: list[tuple[int, int]],
+            b_samples: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        """Run the mixer over paired sample lists. The two lists must
+        have the same length; the output has the same length too."""
+        assert len(a_samples) == len(b_samples), (
+            f"complex_mixer.run: stream length mismatch "
+            f"({len(a_samples)} vs {len(b_samples)})")
+        return [self.step(a, b) for a, b in zip(a_samples, b_samples)]
+
+
+
 class DcBlocker:
     """Bit-exact model of a first-order IIR DC blocker.
 
