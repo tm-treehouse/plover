@@ -401,6 +401,138 @@ class FirFilter:
         return [self.step(s) for s in samples]
 
 
+class Nco:
+    """Bit-exact model of a numerically-controlled oscillator.
+
+    Produces (cos, sin) sample pairs from a phase accumulator that
+    advances by a software-programmable increment each step. Matches
+    ``units/nco/rtl/nco.sv`` exactly:
+
+    * Phase accumulator is PHASE_W bits, unsigned, starts at 0.
+    * Frequency = (phase_inc / 2^PHASE_W) * sample_rate.
+    * The top LUT_N bits of the phase index a sin/cos lookup table.
+    * Each LUT entry is round-half-up of (value * (2^(SAMPLE_W-1) - 1))
+      with explicit `int(math.floor(x + 0.5))` for positives and
+      `int(math.ceil(x - 0.5))` for negatives. This matches the RTL's
+      $rtoi-based rounding.
+    * Each step() advances phase by phase_inc, returns (cos, sin) for
+      the *pre-advance* phase value (so the first sample at
+      phase_inc=k is the cos/sin at phase=0, then phase=k, then
+      phase=2k, ...).
+
+    State:
+        _phase_acc — current phase accumulator value
+        _phase_inc — software-programmable increment, set via
+                     :meth:`set_phase_inc`.
+    """
+
+    def __init__(self, sample_w: int = 16, phase_w: int = 32,
+                 lut_n: int = 10,
+                 sample_int_w:  int | None = None,
+                 sample_frac_w: int | None = None) -> None:
+        assert phase_w >= lut_n, (
+            f"phase_w ({phase_w}) must be >= lut_n ({lut_n}); the top "
+            "LUT_N bits of phase select the LUT entry.")
+        self.SAMPLE_W = sample_w
+        self.PHASE_W = phase_w
+        self.LUT_N = lut_n
+        self.LUT_SIZE = 1 << lut_n
+        self.SAMPLE_INT_W  = sample_int_w  if sample_int_w  is not None else 1
+        self.SAMPLE_FRAC_W = sample_frac_w if sample_frac_w is not None else (sample_w - self.SAMPLE_INT_W)
+        assert self.SAMPLE_INT_W + self.SAMPLE_FRAC_W == self.SAMPLE_W
+        # Maximum positive value in Q1.(SAMPLE_W-1) — matches the RTL's
+        # LUT_SCALE = (1 << (SAMPLE_W-1)) - 1.
+        self.LUT_SCALE = (1 << (sample_w - 1)) - 1
+        self._build_luts()
+        self._phase_acc = 0
+        self._phase_inc = 0
+        self._phase_mask = (1 << phase_w) - 1
+        # Registered I/Q outputs. The RTL's i_data/q_data registers
+        # are initialized to LUT_SCALE (cos(0)) and 0 (sin(0))
+        # respectively after the first reset cycle (when the always
+        # block fires due to !out_valid). The model mirrors that
+        # initial state so beat 0 from both sides is (LUT_SCALE, 0).
+        self._i_data = self.LUT_SCALE
+        self._q_data = 0
+
+    def _build_luts(self) -> None:
+        """Populate sin_lut and cos_lut.
+
+        Rounding policy must match the RTL exactly: round half-up
+        (away from zero on negatives). RTL uses $rtoi after explicit
+        +0.5 or -0.5 nudge. Python does the same with math.floor on
+        positives, math.ceil on negatives — both reduce to "round
+        half away from zero."
+        """
+        self.sin_lut: list[int] = []
+        self.cos_lut: list[int] = []
+        for k in range(self.LUT_SIZE):
+            angle = 2.0 * math.pi * k / self.LUT_SIZE
+            s = math.sin(angle) * self.LUT_SCALE
+            c = math.cos(angle) * self.LUT_SCALE
+            self.sin_lut.append(int(math.floor(s + 0.5)) if s >= 0
+                                else int(math.ceil(s - 0.5)))
+            self.cos_lut.append(int(math.floor(c + 0.5)) if c >= 0
+                                else int(math.ceil(c - 0.5)))
+
+    def set_phase_inc(self, value: int) -> None:
+        self._phase_inc = value & self._phase_mask
+
+    def get_phase_inc(self) -> int:
+        return self._phase_inc
+
+    def reset_phase(self) -> None:
+        """Re-zero the phase accumulator. Useful when a test wants the
+        first sample of its stream to be at phase=0 regardless of any
+        prior usage."""
+        self._phase_acc = 0
+
+    def step(self) -> tuple[int, int]:
+        """Produce one (cos, sin) pair at the current registered I/Q,
+        then advance the phase and the registered I/Q.
+
+        The RTL has a one-cycle pipeline lag between phase_acc and the
+        registered I/Q outputs. The output sequence is:
+
+            beat 0: i_data = cos_lut[0]                         (initial)
+            beat 1: i_data = cos_lut[0]                         (first handshake captures cos[old phase_acc=0])
+            beat 2: i_data = cos_lut[phase_inc >> shift]        (second handshake captures cos[phase_acc=phase_inc])
+            beat 3: i_data = cos_lut[2*phase_inc >> shift]
+            ...
+
+        The model mirrors this by holding two pieces of state:
+
+        * ``_phase_acc``  — the phase value that *will* index the LUT
+                             on the *next* output beat (the RTL's
+                             phase_acc register).
+        * ``_i_data``, ``_q_data`` — the I/Q output of the *current*
+                             beat (the RTL's i_data/q_data registers).
+
+        On step(): return the current (_i_data, _q_data), then capture
+        the new (_i_data, _q_data) from the current _phase_acc, then
+        advance _phase_acc. This matches the RTL exactly because the
+        clock-edge update of i_data uses lut_idx computed from the
+        current (pre-advance) phase_acc, then the phase_acc itself
+        advances on the same edge.
+        """
+        # Output the current registered values (held from prior step).
+        out_i, out_q = self._i_data, self._q_data
+        # Compute the new registered values from the *current* phase_acc
+        # (these are what the RTL captures into i_data/q_data on the
+        # clock edge of this handshake).
+        idx = (self._phase_acc >> (self.PHASE_W - self.LUT_N)) & (self.LUT_SIZE - 1)
+        self._i_data = self.cos_lut[idx]
+        self._q_data = self.sin_lut[idx]
+        # Advance phase_acc.
+        self._phase_acc = (self._phase_acc + self._phase_inc) & self._phase_mask
+        return (out_i, out_q)
+
+    def run(self, n: int) -> list[tuple[int, int]]:
+        """Produce ``n`` (cos, sin) pairs."""
+        return [self.step() for _ in range(n)]
+
+
+
 class DcBlocker:
     """Bit-exact model of a first-order IIR DC blocker.
 

@@ -1,0 +1,60 @@
+CAPI=2:
+# FuseSoC core for the nco unit.
+# Numerically-controlled oscillator (sin/cos generator) with AXI-Lite
+# phase_inc programming.
+
+name: ::nco:0.1.0
+description: NCO — phase accumulator + sin/cos LUT, AXIS IQ output
+
+filesets:
+  rtl:
+    files:
+      - rtl/nco.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+      - rtl
+    toplevel: nco
+
+  lint:
+    default_tool: verilator
+    filesets:
+      - rtl
+    toplevel: nco
+    tools:
+      verilator:
+        mode: lint-only
+        verilator_options:
+          - -Wall
+          - -Wno-DECLFILENAME
+          - -Wno-UNUSEDSIGNAL
+          - -Wno-WIDTHEXPAND
+
+parameters:
+  SAMPLE_W:
+    datatype: int
+    description: Sample width per I or Q (signed bits)
+    paramtype: vlogparam
+    default: 16
+  SAMPLE_INT_W:
+    datatype: int
+    description: Integer bits of sample (incl. sign)
+    paramtype: vlogparam
+    default: 1
+  SAMPLE_FRAC_W:
+    datatype: int
+    description: Fractional bits of sample
+    paramtype: vlogparam
+    default: 15
+  PHASE_W:
+    datatype: int
+    description: Phase accumulator width
+    paramtype: vlogparam
+    default: 32
+  LUT_N:
+    datatype: int
+    description: log2 of sin/cos LUT depth
+    paramtype: vlogparam
+    default: 10
