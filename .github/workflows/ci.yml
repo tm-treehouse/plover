@@ -52,7 +52,7 @@ jobs:
           set +e
           fail=0
           for core in \
-              axil_shell axil_xbar \
+              agc axil_shell axil_xbar \
               cic_decimator cic_interpolator \
               complex_mixer counter dc_blocker fir_filter \
               nco stream_sink syscon \

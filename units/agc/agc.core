@@ -1,0 +1,65 @@
+CAPI=2:
+# FuseSoC core for the agc unit.
+# Automatic gain control. Scales a complex AXIS-IQ stream so the
+# observed magnitude tracks a software-programmable target.
+
+name: ::agc:0.1.0
+description: AGC — feedback gain control on complex AXIS IQ
+
+filesets:
+  rtl:
+    files:
+      - rtl/agc.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+      - rtl
+    toplevel: agc
+
+  lint:
+    default_tool: verilator
+    filesets:
+      - rtl
+    toplevel: agc
+    tools:
+      verilator:
+        mode: lint-only
+        verilator_options:
+          - -Wall
+          - -Wno-DECLFILENAME
+          - -Wno-UNUSEDSIGNAL
+          - -Wno-WIDTHEXPAND
+
+parameters:
+  SAMPLE_W:
+    datatype: int
+    description: Sample width per I or Q (signed bits)
+    paramtype: vlogparam
+    default: 16
+  SAMPLE_INT_W:
+    datatype: int
+    description: Integer bits of sample (incl. sign)
+    paramtype: vlogparam
+    default: 1
+  SAMPLE_FRAC_W:
+    datatype: int
+    description: Fractional bits of sample
+    paramtype: vlogparam
+    default: 15
+  GAIN_W:
+    datatype: int
+    description: Gain register width
+    paramtype: vlogparam
+    default: 16
+  GAIN_INT_W:
+    datatype: int
+    description: Integer bits of gain (no sign — gain is unsigned non-negative)
+    paramtype: vlogparam
+    default: 4
+  GAIN_FRAC_W:
+    datatype: int
+    description: Fractional bits of gain
+    paramtype: vlogparam
+    default: 12

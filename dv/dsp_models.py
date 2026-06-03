@@ -598,6 +598,130 @@ class ComplexMixer:
 
 
 
+class Agc:
+    """Bit-exact model of the automatic gain control feedback loop.
+
+    First closed-loop unit in the project. Match the RTL's gain
+    register update timing precisely — any tiny disagreement in when
+    `gain` is read versus written compounds into runaway divergence
+    because the gain state's trajectory depends on its own history.
+
+    Per-step contract (mirrors agc.sv exactly):
+
+        magnitude = |in.I| + |in.Q|                          (cheap)
+        error     = target - magnitude                       (signed)
+        delta     = error >> mu_shift                        (signed)
+        gain_next = clamp(gain + delta, gain_min, gain_max)  (clamped)
+        out.I     = (in.I * gain) >> GAIN_FRAC_W             (uses CURRENT gain)
+        out.Q     = (in.Q * gain) >> GAIN_FRAC_W
+        # Then on the clock edge: gain <- gain_next.
+
+    The output of step N is computed with the gain value that was in
+    the register AT THE START of step N — i.e. the gain that was
+    written at the end of step N-1. This matches the RTL where
+    `out_i_q <= out_i_now` and `gain <= gain_next` happen on the same
+    clock edge, but `out_i_now` is combinationally derived from the
+    pre-edge value of `gain`.
+
+    State:
+        _gain — current gain register value (Q4.12 by default).
+
+    Programming:
+        :meth:`set_target`     — sets the AGC target magnitude
+        :meth:`set_mu_shift`   — loop step = 2^-mu_shift
+        :meth:`set_gain_clamp` — gain_min and gain_max
+        :meth:`set_gain_init`  — gain at the next reset_gain pulse
+        :meth:`reset_gain`     — sets gain = gain_init (analog of the
+                                  RTL's control-register pulse)
+    """
+
+    def __init__(self, sample_w: int = 16,
+                 sample_int_w:  int | None = None,
+                 sample_frac_w: int | None = None,
+                 gain_w: int = 16,
+                 gain_int_w:    int | None = None,
+                 gain_frac_w:   int | None = None) -> None:
+        self.SAMPLE_W = sample_w
+        self.SAMPLE_INT_W  = sample_int_w  if sample_int_w  is not None else 1
+        self.SAMPLE_FRAC_W = sample_frac_w if sample_frac_w is not None else (sample_w - self.SAMPLE_INT_W)
+        assert self.SAMPLE_INT_W + self.SAMPLE_FRAC_W == self.SAMPLE_W
+        self.GAIN_W = gain_w
+        self.GAIN_INT_W  = gain_int_w  if gain_int_w  is not None else 4
+        self.GAIN_FRAC_W = gain_frac_w if gain_frac_w is not None else (gain_w - self.GAIN_INT_W)
+        assert self.GAIN_INT_W + self.GAIN_FRAC_W == self.GAIN_W
+        self.GAIN_DEFAULT = 1 << self.GAIN_FRAC_W   # 1.0 in Q-format
+
+        # Register file mirrors. Match RTL reset values.
+        self._target    = 0
+        self._mu_shift  = 14
+        self._gain_min  = 0
+        self._gain_max  = (1 << self.GAIN_W) - 1
+        self._gain_init = self.GAIN_DEFAULT
+        # The actual feedback variable. RTL resets this to GAIN_DEFAULT,
+        # not gain_init, because gain_init may not yet be programmed.
+        self._gain      = self.GAIN_DEFAULT
+
+    # ---- Register-bank-style programming API ----------------------------
+
+    def set_target(self, value: int) -> None:
+        self._target = _signed_wrap(value, self.SAMPLE_W)
+
+    def set_mu_shift(self, value: int) -> None:
+        assert 0 <= value < 32
+        self._mu_shift = value
+
+    def set_gain_clamp(self, gain_min: int, gain_max: int) -> None:
+        mask = (1 << self.GAIN_W) - 1
+        self._gain_min = gain_min & mask
+        self._gain_max = gain_max & mask
+
+    def set_gain_init(self, value: int) -> None:
+        self._gain_init = value & ((1 << self.GAIN_W) - 1)
+
+    def reset_gain(self) -> None:
+        """Equivalent to writing 1 to the RTL's control-register pulse:
+        copies gain_init into the gain register."""
+        self._gain = self._gain_init
+
+    def get_gain(self) -> int:
+        return self._gain
+
+    # ---- Datapath -------------------------------------------------------
+
+    def step(self, in_iq: tuple[int, int]) -> tuple[int, int]:
+        """One AGC update. ``in_iq`` is a signed ``(I, Q)`` tuple.
+        Returns the gain-scaled ``(I, Q)`` output, then updates the
+        internal gain register for the next step."""
+        in_i, in_q = in_iq
+        # 1. Output uses the CURRENT gain (pre-update).
+        prod_i = self._gain * in_i
+        prod_q = self._gain * in_q
+        # Arithmetic right shift; Python's '>>' on signed ints is floor
+        # (matches Verilator's '>>>').
+        shifted_i = prod_i >> self.GAIN_FRAC_W
+        shifted_q = prod_q >> self.GAIN_FRAC_W
+        out_i = _signed_wrap(shifted_i, self.SAMPLE_W)
+        out_q = _signed_wrap(shifted_q, self.SAMPLE_W)
+
+        # 2. Update gain for next step (uses CURRENT input, same as RTL).
+        magnitude = abs(in_i) + abs(in_q)
+        error     = self._target - magnitude
+        delta     = error >> self._mu_shift     # arithmetic shift (signed)
+        gain_summed = self._gain + delta
+        if gain_summed < self._gain_min:
+            self._gain = self._gain_min
+        elif gain_summed > self._gain_max:
+            self._gain = self._gain_max
+        else:
+            self._gain = gain_summed
+
+        return (out_i, out_q)
+
+    def run(self, samples: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        return [self.step(s) for s in samples]
+
+
+
 class DcBlocker:
     """Bit-exact model of a first-order IIR DC blocker.
 
