@@ -1,0 +1,18 @@
+<testsuites name="results">
+  <testsuite name="all" package="all">
+    <property name="random_seed" value="1780453548" />
+    <testcase name="startup" classname="test_nco" file="/home/claude/plover/.venv/lib/python3.12/site-packages/pyuvm/extension_classes.py" lineno="138" time="0.009395122528076172" sim_time_ns="100.0" ratio_time="10643.820737958686" />
+    <testcase name="tone_slow" classname="test_nco" file="/home/claude/plover/.venv/lib/python3.12/site-packages/pyuvm/extension_classes.py" lineno="165" time="0" sim_time_ns="0" ratio_time="0">
+      <skipped />
+    </testcase>
+    <testcase name="tone_fast" classname="test_nco" file="/home/claude/plover/.venv/lib/python3.12/site-packages/pyuvm/extension_classes.py" lineno="200" time="0" sim_time_ns="0" ratio_time="0">
+      <skipped />
+    </testcase>
+    <testcase name="tone_arbitrary" classname="test_nco" file="/home/claude/plover/.venv/lib/python3.12/site-packages/pyuvm/extension_classes.py" lineno="231" time="0" sim_time_ns="0" ratio_time="0">
+      <skipped />
+    </testcase>
+    <testcase name="freq_update" classname="test_nco" file="/home/claude/plover/.venv/lib/python3.12/site-packages/pyuvm/extension_classes.py" lineno="269" time="0" sim_time_ns="0" ratio_time="0">
+      <skipped />
+    </testcase>
+  </testsuite>
+</testsuites>

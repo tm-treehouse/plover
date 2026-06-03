@@ -21,16 +21,59 @@ jobs:
       - name: Sync environment (from uv.lock)
         run: uv sync --frozen
 
-      - name: Verilator version
+      - name: Verilator setup
+        # The pip-pinned `verilator` package bundles its binary inside
+        # the site-packages directory rather than installing it on
+        # PATH under that name (the venv only gets a `verilator-cli`
+        # console script). FuseSoC then drives `make`, and `make`
+        # invokes `verilator` by bare name — so without PATH pointing
+        # at the bundled binary, the lint and build steps fail with
+        # `make: verilator: No such file or directory` (exit 127).
+        #
+        # GitHub Actions runs each step in a fresh shell, so a plain
+        # `export PATH=...` in one step is invisible to the next.
+        # The fix is to use $GITHUB_ENV and $GITHUB_PATH, which the
+        # runner persists across all subsequent steps in the job.
         run: |
-          export VERILATOR_ROOT="$(uv run python -c 'import verilator,os;print(os.path.dirname(verilator.__file__))')"
-          export PATH="$VERILATOR_ROOT/bin:$PATH"
-          verilator --version
+          VERILATOR_ROOT="$(uv run python -c 'import verilator,os;print(os.path.dirname(verilator.__file__))')"
+          echo "VERILATOR_ROOT=$VERILATOR_ROOT" >> "$GITHUB_ENV"
+          echo "$VERILATOR_ROOT/bin" >> "$GITHUB_PATH"
+          "$VERILATOR_ROOT/bin/verilator" --version
 
       - name: Lint RTL (FuseSoC + Verilator)
-        run: uv run fusesoc run --target=lint axil_shell
+        # Lint every unit and the project top. Each core has a `lint`
+        # target with -Wall + the project's `-Wno-*` suppressions
+        # (DECLFILENAME, UNUSEDSIGNAL, WIDTHEXPAND where needed).
+        #
+        # The loop runs every core even if an earlier one fails, so a
+        # single broken unit doesn't mask others. The exit code at the
+        # end is non-zero iff any lint invocation failed.
+        run: |
+          set +e
+          fail=0
+          for core in \
+              axil_shell axil_xbar \
+              cic_decimator cic_interpolator \
+              complex_mixer counter dc_blocker fir_filter \
+              nco stream_sink syscon \
+              plover; do
+            echo "::group::lint $core"
+            uv run fusesoc run --target=lint "$core"
+            rc=$?
+            echo "::endgroup::"
+            if [ $rc -ne 0 ]; then
+              echo "::error::lint failed for $core (exit $rc)"
+              fail=1
+            fi
+          done
+          exit $fail
 
       - name: Run testbench (pytest)
+        # Step-level timeout of 20 minutes: the suite finishes in ~8 min
+        # locally, so 20 is a comfortable upper bound that catches a
+        # hung test fast without flaking on slow runners. Without this,
+        # a hang would consume the job-level default of 6 hours.
+        timeout-minutes: 20
         run: uv run pytest -v
 
       - name: Upload results
@@ -41,4 +84,5 @@ jobs:
           path: |
             dv/results.xml
             dv/*.result.xml
+            build/dsp_plots/*.png
           if-no-files-found: ignore
