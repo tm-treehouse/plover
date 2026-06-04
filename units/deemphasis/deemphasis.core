@@ -1,0 +1,58 @@
+CAPI=2:
+# FuseSoC core for the deemphasis unit.
+# Single-pole IIR low-pass for FM broadcast de-emphasis.
+
+name: ::deemphasis:0.1.0
+description: De-emphasis filter — single-pole IIR low-pass for FM broadcast
+
+filesets:
+  rtl:
+    files:
+      - rtl/deemphasis.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+      - rtl
+    toplevel: deemphasis
+
+  lint:
+    default_tool: verilator
+    filesets:
+      - rtl
+    toplevel: deemphasis
+    tools:
+      verilator:
+        mode: lint-only
+        verilator_options:
+          - -Wall
+          - -Wno-DECLFILENAME
+          - -Wno-UNUSEDSIGNAL
+          - -Wno-WIDTHEXPAND
+
+parameters:
+  SAMPLE_W:
+    datatype: int
+    paramtype: vlogparam
+    default: 16
+  SAMPLE_INT_W:
+    datatype: int
+    paramtype: vlogparam
+    default: 1
+  SAMPLE_FRAC_W:
+    datatype: int
+    paramtype: vlogparam
+    default: 15
+  COEF_W:
+    datatype: int
+    paramtype: vlogparam
+    default: 16
+  COEF_INT_W:
+    datatype: int
+    paramtype: vlogparam
+    default: 1
+  COEF_FRAC_W:
+    datatype: int
+    paramtype: vlogparam
+    default: 15

@@ -875,6 +875,75 @@ class PhaseDiff:
 
 
 
+class Deemphasis:
+    """Bit-exact model of the FM de-emphasis single-pole IIR low-pass.
+
+    Difference equation:
+
+        y[n] = (1 - alpha) * x[n] + alpha * y[n-1]
+
+    with the multiply-add carried out in integer arithmetic and the
+    result right-shifted by COEF_FRAC_W to bring the binary point
+    back to the sample's Q-position. Truncation matches the RTL's:
+    low SAMPLE_W bits of the shifted sum, same as the FIR.
+
+    State:
+        _y_prev — the last output sample, signed SAMPLE_W bits.
+        _alpha  — software-programmed coefficient. Set via
+                  :meth:`set_alpha`. Defaults to the RTL's reset
+                  value (24820 in Q1.15 ~ 0.7574, the value for
+                  48 kHz / 75 us).
+
+    The (1 - alpha) is held in a representation one bit wider than
+    alpha (because (1 << COEF_FRAC_W) is one larger than alpha's
+    range), matching the RTL's COEF_W+1-bit ``one_minus_alpha``
+    wire. The product widths follow.
+    """
+
+    ALPHA_DEFAULT = 24820  # 0x60F4, ~0.7574 in Q1.15
+
+    def __init__(self, sample_w: int = 16,
+                 sample_int_w:  int | None = None,
+                 sample_frac_w: int | None = None,
+                 coef_w: int = 16,
+                 coef_int_w:    int | None = None,
+                 coef_frac_w:   int | None = None) -> None:
+        self.SAMPLE_W = sample_w
+        self.SAMPLE_INT_W  = sample_int_w  if sample_int_w  is not None else 1
+        self.SAMPLE_FRAC_W = sample_frac_w if sample_frac_w is not None else (sample_w - self.SAMPLE_INT_W)
+        assert self.SAMPLE_INT_W + self.SAMPLE_FRAC_W == self.SAMPLE_W
+        self.COEF_W = coef_w
+        self.COEF_INT_W  = coef_int_w  if coef_int_w  is not None else 1
+        self.COEF_FRAC_W = coef_frac_w if coef_frac_w is not None else (coef_w - self.COEF_INT_W)
+        assert self.COEF_INT_W + self.COEF_FRAC_W == self.COEF_W
+
+        self._y_prev = 0
+        self._alpha  = self.ALPHA_DEFAULT
+        self._max_coef = 1 << self.COEF_FRAC_W   # integer representation of 1.0
+
+    def set_alpha(self, value: int) -> None:
+        """Program the IIR coefficient. ``value`` is the Q-format
+        integer; e.g. 0.5 in Q1.15 = 16384."""
+        self._alpha = _signed_wrap(value, self.COEF_W)
+
+    def step(self, x: int) -> int:
+        x = _signed_wrap(x, self.SAMPLE_W)
+        one_minus_alpha = self._max_coef - self._alpha
+        prod_in = one_minus_alpha * x
+        prod_fb = self._alpha * self._y_prev
+        sum_full = prod_in + prod_fb
+        # Python's arithmetic right shift (floor) on signed ints
+        # matches Verilator's signed >>> .
+        sum_shifted = sum_full >> self.COEF_FRAC_W
+        y_next = _signed_wrap(sum_shifted, self.SAMPLE_W)
+        self._y_prev = y_next
+        return y_next
+
+    def run(self, samples: list[int]) -> list[int]:
+        return [self.step(s) for s in samples]
+
+
+
 class DcBlocker:
     """Bit-exact model of a first-order IIR DC blocker.
 
