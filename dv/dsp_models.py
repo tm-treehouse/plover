@@ -836,6 +836,45 @@ class Cordic:
 
 
 
+class PhaseDiff:
+    """Bit-exact model of the phase differentiator with implicit unwrap.
+
+    Consumes a stream of signed PHASE_W-bit phase samples (in the
+    NCO/CORDIC encoding: +-pi mapped to +-2^(PHASE_W-1)) and produces
+    the per-sample frequency stream ``freq[n] = phase[n] - phase[n-1]``
+    using signed-modular arithmetic. The PHASE_W-bit subtraction
+    naturally handles +-pi wrap: a +pi-to--pi transition in phase
+    produces a small positive frequency, not a large negative one,
+    because the bit-width wrap cancels the 2*pi jump.
+
+    State:
+        _phase_prev — the most recently consumed phase sample. Reset
+                      to 0; bit-exactness against the RTL requires
+                      both sides start at 0.
+
+    The first emitted output is ``phase[0] - 0 = phase[0]``, which
+    isn't a meaningful frequency — it's just the absolute starting
+    phase. Consumers should drop the first beat after reset, same as
+    any settling pipeline.
+    """
+
+    def __init__(self, phase_w: int = 16) -> None:
+        self.PHASE_W = phase_w
+        self._phase_prev = 0
+
+    def step(self, phase: int) -> int:
+        """One phase sample in, one freq sample out."""
+        # Signed-modular subtraction in PHASE_W bits. This is exactly
+        # what the RTL's signed subtractor produces.
+        diff = _signed_wrap(phase - self._phase_prev, self.PHASE_W)
+        self._phase_prev = _signed_wrap(phase, self.PHASE_W)
+        return diff
+
+    def run(self, samples: list[int]) -> list[int]:
+        return [self.step(s) for s in samples]
+
+
+
 class DcBlocker:
     """Bit-exact model of a first-order IIR DC blocker.
 

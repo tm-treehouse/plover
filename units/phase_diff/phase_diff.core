@@ -1,0 +1,40 @@
+CAPI=2:
+# FuseSoC core for the phase_diff unit.
+# Phase differentiator with implicit unwrap; consumes signed phase
+# samples, produces signed instantaneous frequency.
+
+name: ::phase_diff:0.1.0
+description: Phase differentiator with implicit modular unwrap
+
+filesets:
+  rtl:
+    files:
+      - rtl/phase_diff.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+      - rtl
+    toplevel: phase_diff
+
+  lint:
+    default_tool: verilator
+    filesets:
+      - rtl
+    toplevel: phase_diff
+    tools:
+      verilator:
+        mode: lint-only
+        verilator_options:
+          - -Wall
+          - -Wno-DECLFILENAME
+          - -Wno-UNUSEDSIGNAL
+          - -Wno-WIDTHEXPAND
+
+parameters:
+  PHASE_W:
+    datatype: int
+    description: Phase / frequency width in bits (signed)
+    paramtype: vlogparam
+    default: 16

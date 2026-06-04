@@ -55,7 +55,7 @@ jobs:
               agc axil_shell axil_xbar \
               cic_decimator cic_interpolator \
               complex_mixer cordic counter dc_blocker fir_filter \
-              nco stream_sink syscon \
+              nco phase_diff stream_sink syscon \
               plover; do
             echo "::group::lint $core"
             uv run fusesoc run --target=lint "$core"
