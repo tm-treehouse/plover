@@ -1,0 +1,59 @@
+CAPI=2:
+# FuseSoC core for the cordic unit.
+# Vectoring-mode CORDIC: complex IQ in, (phase, magnitude) out.
+
+name: ::cordic:0.1.0
+description: CORDIC vectoring engine, 16-stage pipelined
+
+filesets:
+  rtl:
+    files:
+      - rtl/cordic.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+      - rtl
+    toplevel: cordic
+
+  lint:
+    default_tool: verilator
+    filesets:
+      - rtl
+    toplevel: cordic
+    tools:
+      verilator:
+        mode: lint-only
+        verilator_options:
+          - -Wall
+          - -Wno-DECLFILENAME
+          - -Wno-UNUSEDSIGNAL
+          - -Wno-WIDTHEXPAND
+
+parameters:
+  SAMPLE_W:
+    datatype: int
+    description: Sample width per I or Q (signed bits)
+    paramtype: vlogparam
+    default: 16
+  SAMPLE_INT_W:
+    datatype: int
+    description: Integer bits of sample (incl. sign)
+    paramtype: vlogparam
+    default: 1
+  SAMPLE_FRAC_W:
+    datatype: int
+    description: Fractional bits of sample
+    paramtype: vlogparam
+    default: 15
+  PHASE_W:
+    datatype: int
+    description: Phase output width (signed; +-pi mapped to +-2^(PHASE_W-1))
+    paramtype: vlogparam
+    default: 16
+  ITERATIONS:
+    datatype: int
+    description: Number of CORDIC iterations (only 16 supported in v1)
+    paramtype: vlogparam
+    default: 16

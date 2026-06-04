@@ -722,6 +722,120 @@ class Agc:
 
 
 
+class Cordic:
+    """Bit-exact model of the 16-stage vectoring CORDIC.
+
+    Consumes a complex ``(I, Q)`` sample, produces ``(magnitude, phase)``.
+    Magnitude is ``Kn * sqrt(I^2 + Q^2)`` where ``Kn ~ 1.6468`` is the
+    well-known CORDIC gain (uncompensated by design — see RTL header
+    comment). Phase is in signed ``PHASE_W``-bit two's complement,
+    with ``+pi`` mapped to ``2^(PHASE_W-1) - 1`` and ``-pi`` mapped to
+    ``-2^(PHASE_W-1)``.
+
+    The model mirrors the RTL pipeline stage-by-stage. Each call to
+    :meth:`step` performs the quadrant pre-rotation plus all 16
+    iterations and returns the final ``(magnitude, phase)`` pair. No
+    pipeline state is held between calls — the RTL's 16-cycle latency
+    is a timing-only property; the per-sample math from input to
+    output is the same.
+
+    Critical for bit-exact agreement:
+
+    * Python's ``>>`` on signed ints is arithmetic shift (floor
+      semantics), matching Verilator's ``>>>`` on signed values.
+    * The ATAN_LUT entries are generated with ``math.atan`` +
+      ``math.floor(value + 0.5)`` for positives / ``math.ceil(value -
+      0.5)`` for negatives — round-half-away-from-zero, matching the
+      RTL's ``$rtoi(value +/- 0.5)`` pattern.
+    * All intermediate ``x``, ``y`` values use ``INTERNAL_W = SAMPLE_W
+      + 2`` bits signed, with ``_signed_wrap`` after each update to
+      mirror RTL register truncation.
+    """
+
+    def __init__(self, sample_w: int = 16,
+                 sample_int_w:  int | None = None,
+                 sample_frac_w: int | None = None,
+                 phase_w: int = 16,
+                 iterations: int = 16) -> None:
+        assert iterations == 16, (
+            f"Cordic: only iterations=16 supported in v1 (got {iterations})")
+        self.SAMPLE_W = sample_w
+        self.SAMPLE_INT_W  = sample_int_w  if sample_int_w  is not None else 1
+        self.SAMPLE_FRAC_W = sample_frac_w if sample_frac_w is not None else (sample_w - self.SAMPLE_INT_W)
+        assert self.SAMPLE_INT_W + self.SAMPLE_FRAC_W == self.SAMPLE_W
+        self.PHASE_W    = phase_w
+        self.ITERATIONS = iterations
+        self.INTERNAL_W = sample_w + 2
+
+        # ATAN_LUT[k] = round(atan(2^-k) * 2^(PHASE_W-1) / pi)
+        self.atan_lut: list[int] = []
+        scale = (1 << (phase_w - 1)) / math.pi
+        for k in range(iterations):
+            angle = math.atan(2.0 ** (-k))
+            value = angle * scale
+            if value >= 0:
+                rounded = int(math.floor(value + 0.5))
+            else:
+                rounded = int(math.ceil(value - 0.5))
+            self.atan_lut.append(rounded)
+
+        # pi/2 in the phase encoding.
+        self.PI_OVER_2 = 1 << (phase_w - 2)
+        self.NEG_PI_2  = -(1 << (phase_w - 2))
+
+    def step(self, in_iq: tuple[int, int]) -> tuple[int, int]:
+        """One CORDIC sample. Returns ``(magnitude, phase)``."""
+        in_i, in_q = in_iq
+
+        # ---- Quadrant pre-rotation ----
+        if in_i >= 0:
+            x, y, z = in_i, in_q, 0
+        elif in_q >= 0:
+            # Second quadrant: rotate by +pi/2.  (x, y) -> (y, -x).
+            x, y, z = in_q, -in_i, self.PI_OVER_2
+        else:
+            # Third quadrant: rotate by -pi/2.  (x, y) -> (-y, x).
+            x, y, z = -in_q, in_i, self.NEG_PI_2
+
+        # Sign/zero-extend to INTERNAL_W and re-wrap to ensure the
+        # representation matches the RTL register widths.
+        x = _signed_wrap(x, self.INTERNAL_W)
+        y = _signed_wrap(y, self.INTERNAL_W)
+        z = _signed_wrap(z, self.PHASE_W)
+
+        # ---- Iterations ----
+        for k in range(self.ITERATIONS):
+            # sigma = -sign(y). y < 0 => sigma = +1 => x_new = x - (y>>k).
+            # y >= 0 => sigma = -1 => x_new = x + (y>>k).
+            x_shifted = x >> k          # Python signed >> is arithmetic.
+            y_shifted = y >> k
+            atan_k    = self.atan_lut[k]
+            if y < 0:
+                new_x = x - y_shifted
+                new_y = y + x_shifted
+                new_z = z - atan_k
+            else:
+                new_x = x + y_shifted
+                new_y = y - x_shifted
+                new_z = z + atan_k
+            x = _signed_wrap(new_x, self.INTERNAL_W)
+            y = _signed_wrap(new_y, self.INTERNAL_W)
+            z = _signed_wrap(new_z, self.PHASE_W)
+
+        # ---- Output ----
+        # Magnitude is the final x (which is unsigned after the iter
+        # drives y -> 0). RTL stores it in INTERNAL_W bits signed but
+        # the slice m_axis_tdata[INTERNAL_W-1:0] is the raw bit
+        # pattern; downstream interprets as unsigned. The Python side
+        # returns the signed value — the test harness reinterprets to
+        # match the RTL packing.
+        return (x, z)
+
+    def run(self, samples: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        return [self.step(s) for s in samples]
+
+
+
 class DcBlocker:
     """Bit-exact model of a first-order IIR DC blocker.
 
