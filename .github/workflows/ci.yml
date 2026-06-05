@@ -53,6 +53,7 @@ jobs:
           fail=0
           for core in \
               agc audio_decimator axil_shell axil_xbar \
+              channel_decimator \
               cic_decimator cic_interpolator \
               complex_mixer cordic counter dc_blocker deemphasis fir_filter \
               fm_demod \

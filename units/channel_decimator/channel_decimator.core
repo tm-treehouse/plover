@@ -1,0 +1,86 @@
+CAPI=2:
+# FuseSoC core for channel_decimator.
+#
+# Composes cic_decimator + fir_filter for the front-end channel-rate
+# decimation step (~10x: wide baseband -> intermediate chain rate).
+# Sibling to audio_decimator, which targets the back-end 5x audio step.
+#
+# Pure plumbing — no new arithmetic. Depends on cic_decimator + fir_filter.
+
+name: ::channel_decimator:0.1.0
+description: Channel-rate decimator — CIC + FIR composition for FM front-end
+
+filesets:
+  rtl:
+    files:
+      - rtl/channel_decimator.sv
+    file_type: systemVerilogSource
+    depend:
+      - ::cic_decimator
+      - ::fir_filter
+
+targets:
+  default:
+    filesets:
+      - rtl
+    toplevel: channel_decimator
+
+  lint:
+    default_tool: verilator
+    filesets:
+      - rtl
+    toplevel: channel_decimator
+    tools:
+      verilator:
+        mode: lint-only
+        verilator_options:
+          - -Wall
+          - -Wno-DECLFILENAME
+          - -Wno-UNUSEDSIGNAL
+          - -Wno-WIDTHEXPAND
+
+parameters:
+  CIC_STAGES:
+    datatype: int
+    paramtype: vlogparam
+    default: 3
+  CIC_DECIM:
+    datatype: int
+    paramtype: vlogparam
+    default: 10
+  CIC_DELAY:
+    datatype: int
+    paramtype: vlogparam
+    default: 1
+  SAMPLE_W:
+    datatype: int
+    paramtype: vlogparam
+    default: 16
+  SAMPLE_INT_W:
+    datatype: int
+    paramtype: vlogparam
+    default: 1
+  SAMPLE_FRAC_W:
+    datatype: int
+    paramtype: vlogparam
+    default: 15
+  FIR_N_TAPS:
+    datatype: int
+    paramtype: vlogparam
+    default: 32
+  FIR_COEF_W:
+    datatype: int
+    paramtype: vlogparam
+    default: 16
+  FIR_COEF_INT_W:
+    datatype: int
+    paramtype: vlogparam
+    default: 1
+  FIR_COEF_FRAC_W:
+    datatype: int
+    paramtype: vlogparam
+    default: 15
+  FIR_OUT_SHIFT:
+    datatype: int
+    paramtype: vlogparam
+    default: 15
