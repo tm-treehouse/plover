@@ -15,7 +15,13 @@ sys.path.insert(0, str(ROOT))
 from tools.dv_harness import HarnessConfig, run_testcase  # noqa: E402
 
 
-TESTCASES = ["smoke"]
+TESTCASES = [
+    "smoke",
+    "bit_exact_tone",
+    "bit_exact_random_iq",
+    "bit_exact_dc",
+    "bit_exact_alpha_programming",
+]
 
 
 def _cfg():
