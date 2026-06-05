@@ -1,0 +1,84 @@
+CAPI=2:
+# FuseSoC core for the audio_decimator wrapper.
+#
+# Composes cic_decimator + fir_filter as one unit. Pure RTL plumbing —
+# the wrapper has no arithmetic of its own; depends on the two unit
+# cores for the actual DSP.
+
+name: ::audio_decimator:0.1.0
+description: Audio-rate decimator — CIC + FIR composition for FM receive chain
+
+filesets:
+  rtl:
+    files:
+      - rtl/audio_decimator.sv
+    file_type: systemVerilogSource
+    depend:
+      - ::cic_decimator
+      - ::fir_filter
+
+targets:
+  default:
+    filesets:
+      - rtl
+    toplevel: audio_decimator
+
+  lint:
+    default_tool: verilator
+    filesets:
+      - rtl
+    toplevel: audio_decimator
+    tools:
+      verilator:
+        mode: lint-only
+        verilator_options:
+          - -Wall
+          - -Wno-DECLFILENAME
+          - -Wno-UNUSEDSIGNAL
+          - -Wno-WIDTHEXPAND
+
+parameters:
+  CIC_STAGES:
+    datatype: int
+    paramtype: vlogparam
+    default: 3
+  CIC_DECIM:
+    datatype: int
+    paramtype: vlogparam
+    default: 5
+  CIC_DELAY:
+    datatype: int
+    paramtype: vlogparam
+    default: 1
+  SAMPLE_W:
+    datatype: int
+    paramtype: vlogparam
+    default: 16
+  SAMPLE_INT_W:
+    datatype: int
+    paramtype: vlogparam
+    default: 1
+  SAMPLE_FRAC_W:
+    datatype: int
+    paramtype: vlogparam
+    default: 15
+  FIR_N_TAPS:
+    datatype: int
+    paramtype: vlogparam
+    default: 16
+  FIR_COEF_W:
+    datatype: int
+    paramtype: vlogparam
+    default: 16
+  FIR_COEF_INT_W:
+    datatype: int
+    paramtype: vlogparam
+    default: 1
+  FIR_COEF_FRAC_W:
+    datatype: int
+    paramtype: vlogparam
+    default: 15
+  FIR_OUT_SHIFT:
+    datatype: int
+    paramtype: vlogparam
+    default: 15
