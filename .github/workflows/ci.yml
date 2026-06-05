@@ -55,6 +55,7 @@ jobs:
               agc audio_decimator axil_shell axil_xbar \
               cic_decimator cic_interpolator \
               complex_mixer cordic counter dc_blocker deemphasis fir_filter \
+              fm_demod \
               nco phase_diff stream_sink syscon \
               plover; do
             echo "::group::lint $core"
