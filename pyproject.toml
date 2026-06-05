@@ -50,12 +50,18 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
-# Only the harness in dv/ is a real pytest entry point. The cocotb test
-# modules (axil_test.py, test_axil_shell.py) run *inside* the simulator and
-# must not be collected directly — they import a generated regmap and use
-# cocotb's runtime, so collecting them at the top level would error.
-testpaths = ["units", "top"]
-python_files = ["test_*_pytest.py"]
+# Three classes of test file:
+#   * test_*_pytest.py under units/ and top/ — FuseSoC + cocotb harness
+#     entry points (RTL tests). Run a simulator, slow.
+#   * test_models_*.py under dv/ — pure-Python model-only tests. No
+#     simulator, fast (sub-second each).
+#   * test_*.py inside units/*/dv/ and top/dv/ — cocotb modules that
+#     run *inside* the simulator. These import cocotb's runtime and
+#     would error if collected at the top level, so they're excluded
+#     by the python_files patterns below (neither pattern matches
+#     plain test_*.py).
+testpaths = ["units", "top", "dv"]
+python_files = ["test_*_pytest.py", "test_models_*.py"]
 addopts = "-ra"
 markers = [
     "slow: tests that build RTL and run a full simulation",

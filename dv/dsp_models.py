@@ -1145,3 +1145,145 @@ class CicFirChain:
             if r is not None:
                 out.append(r)
         return out
+
+
+
+class FmDemodChain:
+    """End-to-end FM broadcast demodulator reference model.
+
+    Composes the demod-side units of the FM receive chain:
+
+        complex IQ in
+          -> Cordic           -> (magnitude, phase) per sample
+          -> PhaseDiff (phase) -> instantaneous frequency
+          -> Deemphasis        -> de-emphasized frequency
+          -> CicFirChain       -> audio sample at decimated rate
+
+    No new arithmetic — each stage is the existing per-unit model
+    reused with consistent parameters. The composition's bit-exactness
+    inherits from the per-unit bit-exactness already verified by the
+    standalone unit tests.
+
+    Why this class exists: when the demod sub-chain RTL integration
+    lands (step 4 of the FM chain plan), the cocotb tests will need a
+    host-side reference to compare against. Centralizing the composition
+    here means each test instantiates one object instead of re-stitching
+    the four sub-models. It also exercises the composition itself —
+    catching e.g. width-mismatch surprises at unit boundaries before
+    they show up in RTL integration.
+
+    Architectural notes
+    -------------------
+    The CORDIC's *magnitude* output is computed and available via the
+    most recent ``last_magnitude`` attribute, but it is not consumed by
+    the chain — FM demodulation cares only about phase. Production FM
+    radios use the magnitude for signal-quality indication (SNR
+    estimate, RSSI, lock-loss detection); that's a future feature.
+
+    The PhaseDiff -> Deemphasis boundary is the one place where the
+    sample's *meaning* changes (from phase encoding to frequency
+    samples) but the bit width does not (both signed PHASE_W bits
+    by default; this class asserts PHASE_W == audio SAMPLE_W). The
+    Deemphasis filter is linear, so reinterpreting bits as
+    frequency-Q is invisible to the arithmetic — it just changes how
+    a human reads the output.
+
+    Sample-rate behavior
+    --------------------
+    Step :meth:`step` takes one complex IQ sample at the chain input
+    rate. It returns ``int | None`` — the audio sample for cycles
+    where the audio decimator emits, ``None`` otherwise. With CIC R=5
+    inside the audio decimator, roughly 1 in 5 calls returns a sample.
+    """
+
+    def __init__(self,
+                 # Sample width is shared across the chain. Default 16-bit.
+                 sample_w: int = 16,
+                 # Phase output width of the CORDIC. Must equal sample_w
+                 # because Deemphasis consumes its input as sample_w bits.
+                 phase_w:  int = 16,
+                 # Audio decimator parameters (CIC + FIR).
+                 cic_stages: int = 3,
+                 cic_decim:  int = 5,
+                 cic_delay:  int = 1,
+                 fir_n_taps: int = 16,
+                 fir_coef_w: int = 16,
+                 fir_out_shift: int | None = None,
+                 # Deemphasis coefficient width.
+                 deemph_coef_w: int = 16) -> None:
+        assert phase_w == sample_w, (
+            f"FmDemodChain: PHASE_W ({phase_w}) must equal SAMPLE_W "
+            f"({sample_w}) — PhaseDiff output feeds Deemphasis directly "
+            f"and the bit widths must match.")
+
+        self.SAMPLE_W = sample_w
+        self.PHASE_W  = phase_w
+
+        # Sub-models. Each is the existing per-unit reference model,
+        # instantiated with parameters matching the future RTL chain.
+        self._cordic = Cordic(
+            sample_w=sample_w,
+            phase_w=phase_w,
+            iterations=16,
+        )
+        self._phase_diff = PhaseDiff(phase_w=phase_w)
+        self._deemphasis = Deemphasis(
+            sample_w=sample_w,
+            coef_w=deemph_coef_w,
+        )
+        # Use the existing audio-decimator reference (CicFirChain
+        # configured for audio-rate decimation).
+        self._audio = CicFirChain(
+            cic_stages=cic_stages,
+            cic_decim=cic_decim,
+            cic_delay=cic_delay,
+            cic_in_w=sample_w,
+            cic_out_w=sample_w,
+            fir_n_taps=fir_n_taps,
+            fir_in_w=sample_w,
+            fir_coef_w=fir_coef_w,
+            fir_out_w=sample_w,
+            fir_out_shift=fir_out_shift,
+        )
+
+        # Last magnitude seen — informational only; FM doesn't use it.
+        self.last_magnitude: int = 0
+
+    # ---- Programming API -----------------------------------------------
+
+    def set_deemphasis_alpha(self, value: int) -> None:
+        """Program the de-emphasis IIR coefficient. Same Q-format as
+        the underlying Deemphasis unit (e.g. Q1.15 by default)."""
+        self._deemphasis.set_alpha(value)
+
+    def set_audio_fir_coef(self, idx: int, value: int) -> None:
+        """Program one tap of the audio decimator's FIR."""
+        self._audio.set_coef(idx, value)
+
+    # ---- Datapath -------------------------------------------------------
+
+    def step(self, in_iq: tuple[int, int]) -> int | None:
+        """One complex IQ sample in. Returns the audio sample for
+        cycles where the audio decimator emits, ``None`` otherwise."""
+        # 1. CORDIC: IQ -> (mag, phase). Phase is what we care about
+        #    for FM; magnitude is recorded but not used downstream.
+        magnitude, phase = self._cordic.step(in_iq)
+        self.last_magnitude = magnitude
+        # 2. PhaseDiff: phase -> frequency (instantaneous).
+        freq = self._phase_diff.step(phase)
+        # 3. Deemphasis low-pass.
+        deemph_freq = self._deemphasis.step(freq)
+        # 4. Audio decimator. Returns int | None.
+        return self._audio.step(deemph_freq)
+
+    def run(self, samples: list[tuple[int, int]]) -> list[int]:
+        """Run the chain over a list of IQ samples; return the
+        list of audio outputs (one per CIC output beat — roughly
+        len(samples) // cic_decim audio samples)."""
+        out: list[int] = []
+        for s in samples:
+            r = self.step(s)
+            if r is not None:
+                out.append(r)
+        return out
+
